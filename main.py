@@ -11,7 +11,7 @@ import fitz  # PyMuPDF
 from pypdf import PdfReader, PdfWriter
 
 app = FastAPI(
-    title="PDF Auto Editor API",
+    title="PDF Auto Editor API - MyWebby Agency",
     description="Microservizio veloce e potente per elaborazione e modifica automatica di PDF.",
     version="1.0.0"
 )
@@ -35,24 +35,21 @@ INDEX_HTML_PATH = os.path.join(STATIC_DIR, "index.html")
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
-    # Try reading static/index.html first
     if os.path.exists(INDEX_HTML_PATH):
         with open(INDEX_HTML_PATH, "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
     
-    # Also check current working directory static/index.html
     cwd_static = os.path.join(os.getcwd(), "static", "index.html")
     if os.path.exists(cwd_static):
         with open(cwd_static, "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
 
-    # Fallback to embedded HTML
     return HTMLResponse(content=HTML_EMBEDDED)
 
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "service": "pdf-auto-editor", "version": "1.0.0"}
+    return {"status": "ok", "agency": "MyWebby Agency", "service": "pdf-auto-editor", "version": "1.0.0"}
 
 
 @app.post("/api/merge")
@@ -240,76 +237,51 @@ async def protect_pdf(file: UploadFile = File(...), password: str = Form(...)):
         raise HTTPException(status_code=500, detail=f"Errore durante protezione: {str(e)}")
 
 
-@app.post("/api/render-preview")
-async def render_preview(file: UploadFile = File(...)):
-    content = await file.read()
-    try:
-        doc = fitz.open(stream=content, filetype="pdf")
-        pages_b64 = []
-        max_preview_pages = min(len(doc), 10)
-        
-        for i in range(max_preview_pages):
-            page = doc[i]
-            pix = page.get_pixmap(dpi=72)
-            img_bytes = pix.tobytes("png")
-            b64_str = base64.b64encode(img_bytes).decode("utf-8")
-            pages_b64.append(b64_str)
-            
-        doc.close()
-        return {"pages": pages_b64, "total_pages": len(doc)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore generazione anteprima: {str(e)}")
-
-
 HTML_EMBEDDED = """<!DOCTYPE html>
 <html lang="it">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF Auto Editor - Tool Gratuito Online per Modificare PDF</title>
-    <meta name="description" content="Modifica, unisci, dividi, ruota, comprimi ed estrai testo dai tuoi PDF in modo veloce, sicuro e gratuito.">
+    <title>PDF Auto Editor - MyWebby Agency</title>
+    <meta name="description" content="Strumento professionale per la gestione e modifica automatica dei file PDF. Realizzato da MyWebby Agency.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         :root {
-            --bg-dark: #0A0D14;
-            --card-bg: rgba(18, 24, 38, 0.75);
+            --mywebby-orange: #F05B28;
+            --mywebby-orange-hover: #D94A1B;
+            --mywebby-orange-glow: rgba(240, 91, 40, 0.25);
+            --mywebby-teal-dark: #0B2B2E;
+            --mywebby-teal-card: #103539;
+            --bg-dark: #061517;
             --card-border: rgba(255, 255, 255, 0.08);
-            --accent-primary: #6366F1;
-            --accent-glow: rgba(99, 102, 241, 0.35);
-            --accent-secondary: #8B5CF6;
-            --accent-pink: #EC4899;
-            --accent-emerald: #10B981;
             --text-main: #F3F4F6;
             --text-muted: #9CA3AF;
+            --accent-emerald: #10B981;
         }
-
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
-
         body {
             background-color: var(--bg-dark);
             background-image: 
-                radial-gradient(at 10% 10%, rgba(99, 102, 241, 0.15) 0px, transparent 50%),
-                radial-gradient(at 90% 90%, rgba(236, 72, 153, 0.12) 0px, transparent 50%),
-                radial-gradient(at 50% 50%, rgba(139, 92, 246, 0.1) 0px, transparent 50%);
+                radial-gradient(at 10% 10%, rgba(240, 91, 40, 0.12) 0px, transparent 50%),
+                radial-gradient(at 90% 90%, rgba(11, 43, 46, 0.4) 0px, transparent 50%),
+                radial-gradient(at 50% 50%, rgba(16, 53, 57, 0.2) 0px, transparent 50%);
             background-attachment: fixed;
             color: var(--text-main);
             min-height: 100vh;
             display: flex;
             flex-direction: column;
         }
-
         header {
             border-bottom: 1px solid var(--card-border);
             backdrop-filter: blur(16px);
-            background: rgba(10, 13, 20, 0.7);
+            background: rgba(6, 21, 23, 0.85);
             position: sticky;
             top: 0;
             z-index: 50;
         }
-
         .navbar {
             max-width: 1200px;
             margin: 0 auto;
@@ -318,67 +290,41 @@ HTML_EMBEDDED = """<!DOCTYPE html>
             justify-content: space-between;
             align-items: center;
         }
-
-        .logo {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            font-family: 'Outfit', sans-serif;
-            font-weight: 700;
-            font-size: 1.4rem;
-            background: linear-gradient(135deg, #A5B4FC, #6366F1, #EC4899);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            text-decoration: none;
-        }
-
-        .logo-icon {
-            width: 38px;
-            height: 38px;
-            background: linear-gradient(135deg, var(--accent-primary), var(--accent-pink));
-            border-radius: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+        .brand-logo { display: flex; align-items: center; gap: 0.75rem; text-decoration: none; }
+        .logo-badge {
+            background: var(--mywebby-orange);
             color: white;
+            font-family: 'Outfit', sans-serif;
+            font-weight: 800;
             font-size: 1.1rem;
-            box-shadow: 0 4px 15px var(--accent-glow);
+            padding: 0.35rem 0.65rem;
+            border-radius: 8px;
+            transform: rotate(-3deg);
+            box-shadow: 0 4px 12px var(--mywebby-orange-glow);
         }
-
+        .brand-text { font-family: 'Outfit', sans-serif; font-weight: 700; font-size: 1.35rem; color: white; }
+        .brand-subtitle { color: var(--mywebby-orange); font-weight: 600; font-size: 0.85rem; margin-left: 0.25rem; }
         .badge-render {
-            background: rgba(16, 185, 129, 0.15);
+            background: rgba(16, 185, 129, 0.12);
             border: 1px solid rgba(16, 185, 129, 0.3);
             color: #34D399;
-            padding: 0.25rem 0.75rem;
+            padding: 0.3rem 0.85rem;
             border-radius: 9999px;
             font-size: 0.8rem;
             font-weight: 600;
             display: flex;
             align-items: center;
-            gap: 0.4rem;
+            gap: 0.45rem;
         }
-
         .badge-pulse {
-            width: 8px;
-            height: 8px;
-            background-color: #10B981;
-            border-radius: 50%;
-            box-shadow: 0 0 8px #10B981;
-            animation: pulse 2s infinite;
+            width: 8px; height: 8px; background-color: #10B981; border-radius: 50%;
+            box-shadow: 0 0 8px #10B981; animation: pulse 2s infinite;
         }
-
-        @keyframes pulse {
-            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
-            70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
-            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-        }
-
+        @keyframes pulse { 0% { transform: scale(0.95); } 70% { transform: scale(1); } 100% { transform: scale(0.95); } }
         main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 2.5rem 1.5rem; }
-
         .hero { text-align: center; margin-bottom: 2.5rem; }
-        .hero h1 { font-family: 'Outfit', sans-serif; font-size: 2.8rem; font-weight: 700; margin-bottom: 0.75rem; line-height: 1.2; }
-        .hero p { color: var(--text-muted); font-size: 1.1rem; max-width: 650px; margin: 0 auto; }
-
+        .hero h1 { font-family: 'Outfit', sans-serif; font-size: 2.6rem; font-weight: 700; margin-bottom: 0.75rem; line-height: 1.25; color: #FFFFFF; }
+        .hero p { color: var(--text-muted); font-size: 1.05rem; max-width: 650px; margin: 0 auto; }
         .tabs-container { display: flex; justify-content: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 2rem; }
         .tab-btn {
             background: rgba(255, 255, 255, 0.03);
@@ -387,151 +333,106 @@ HTML_EMBEDDED = """<!DOCTYPE html>
             padding: 0.75rem 1.25rem;
             border-radius: 12px;
             font-weight: 600;
-            font-size: 0.95rem;
+            font-size: 0.92rem;
             cursor: pointer;
             transition: all 0.25s ease;
             display: flex;
             align-items: center;
-            gap: 0.5rem;
+            gap: 0.55rem;
         }
+        .tab-btn i { width: 18px; height: 18px; }
         .tab-btn:hover { background: rgba(255, 255, 255, 0.07); color: var(--text-main); border-color: rgba(255, 255, 255, 0.15); }
         .tab-btn.active {
-            background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(139, 92, 246, 0.2));
-            border-color: var(--accent-primary);
+            background: rgba(240, 91, 40, 0.15);
+            border-color: var(--mywebby-orange);
             color: white;
-            box-shadow: 0 4px 20px var(--accent-glow);
+            box-shadow: 0 4px 20px var(--mywebby-orange-glow);
         }
-
         .workspace-card {
-            background: var(--card-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 24px;
+            background: var(--mywebby-teal-card);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 20px;
             backdrop-filter: blur(20px);
             padding: 2rem;
             box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
             margin-bottom: 3rem;
         }
-
         .dropzone {
-            border: 2px dashed rgba(99, 102, 241, 0.4);
+            border: 2px dashed rgba(240, 91, 40, 0.35);
             border-radius: 16px;
             padding: 3.5rem 2rem;
             text-align: center;
             cursor: pointer;
             transition: all 0.3s ease;
-            background: rgba(99, 102, 241, 0.03);
+            background: rgba(240, 91, 40, 0.03);
             position: relative;
         }
-        .dropzone:hover, .dropzone.dragover {
-            border-color: var(--accent-primary);
-            background: rgba(99, 102, 241, 0.08);
-            transform: translateY(-2px);
+        .dropzone:hover, .dropzone.dragover { border-color: var(--mywebby-orange); background: rgba(240, 91, 40, 0.08); transform: translateY(-2px); }
+        .dropzone-icon {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 64px; height: 64px; background: rgba(240, 91, 40, 0.12);
+            color: var(--mywebby-orange); border-radius: 50%; margin-bottom: 1rem;
         }
-        .dropzone-icon { font-size: 3rem; color: var(--accent-primary); margin-bottom: 1rem; }
+        .dropzone-icon i { width: 32px; height: 32px; }
         .file-input { display: none; }
-
         .tool-panel { display: none; margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid var(--card-border); }
         .tool-panel.active { display: block; animation: fadeIn 0.3s ease forwards; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-
         .form-group { margin-bottom: 1.25rem; }
         .form-label { display: block; font-size: 0.9rem; font-weight: 600; margin-bottom: 0.5rem; color: #D1D5DB; }
         .form-control {
-            width: 100%;
-            padding: 0.75rem 1rem;
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid var(--card-border);
-            border-radius: 10px;
-            color: white;
-            font-size: 0.95rem;
-            outline: none;
-            transition: border-color 0.2s ease;
+            width: 100%; padding: 0.75rem 1rem; background: rgba(6, 21, 23, 0.6);
+            border: 1px solid var(--card-border); border-radius: 10px; color: white;
+            font-size: 0.95rem; outline: none; transition: border-color 0.2s ease;
         }
-        .form-control:focus { border-color: var(--accent-primary); }
-
+        .form-control:focus { border-color: var(--mywebby-orange); }
         .btn-action {
-            width: 100%;
-            padding: 1rem;
-            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
-            border: none;
-            border-radius: 12px;
-            color: white;
-            font-weight: 700;
-            font-size: 1.05rem;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 15px var(--accent-glow);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 0.5rem;
+            width: 100%; padding: 1rem; background: var(--mywebby-orange);
+            border: none; border-radius: 12px; color: white; font-weight: 700;
+            font-size: 1.05rem; cursor: pointer; transition: all 0.3s ease;
+            box-shadow: 0 4px 15px var(--mywebby-orange-glow);
+            display: flex; align-items: center; justify-content: center; gap: 0.6rem;
         }
-        .btn-action:hover { opacity: 0.95; transform: translateY(-2px); box-shadow: 0 6px 25px var(--accent-glow); }
-        .btn-action:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-
+        .btn-action i { width: 20px; height: 20px; }
+        .btn-action:hover { background: var(--mywebby-orange-hover); transform: translateY(-2px); box-shadow: 0 6px 25px var(--mywebby-orange-glow); }
+        .btn-action:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shadow: none; }
         .file-list { margin-top: 1.5rem; display: flex; flex-direction: column; gap: 0.75rem; }
         .file-item {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            background: rgba(0, 0, 0, 0.25);
-            border: 1px solid var(--card-border);
-            padding: 0.85rem 1.25rem;
-            border-radius: 12px;
+            display: flex; align-items: center; justify-content: space-between;
+            background: rgba(6, 21, 23, 0.5); border: 1px solid var(--card-border);
+            padding: 0.85rem 1.25rem; border-radius: 12px;
         }
         .file-info { display: flex; align-items: center; gap: 0.75rem; }
+        .file-info i { width: 24px; height: 24px; color: var(--mywebby-orange); }
         .file-name { font-weight: 600; font-size: 0.95rem; }
         .file-size { color: var(--text-muted); font-size: 0.8rem; }
-        .btn-remove { background: transparent; border: none; color: #EF4444; cursor: pointer; font-size: 1.1rem; padding: 0.4rem; border-radius: 6px; }
+        .btn-remove { background: transparent; border: none; color: #EF4444; cursor: pointer; padding: 0.4rem; border-radius: 6px; display: flex; align-items: center; }
+        .btn-remove i { width: 18px; height: 18px; }
         .btn-remove:hover { background: rgba(239, 68, 68, 0.15); }
-
-        .result-box {
-            display: none;
-            margin-top: 1.5rem;
-            padding: 1.5rem;
-            background: rgba(16, 185, 129, 0.08);
-            border: 1px solid rgba(16, 185, 129, 0.3);
-            border-radius: 16px;
-            text-align: center;
-        }
+        .result-box { display: none; margin-top: 1.5rem; padding: 1.5rem; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 16px; text-align: center; }
         .result-box.active { display: block; animation: fadeIn 0.3s ease forwards; }
-
+        .result-box i[data-lucide="check-circle"] { width: 48px; height: 48px; color: #10B981; margin-bottom: 0.5rem; }
         .btn-download {
-            background: linear-gradient(135deg, #10B981, #059669);
-            color: white;
-            padding: 0.85rem 1.75rem;
-            border-radius: 12px;
-            text-decoration: none;
-            font-weight: 700;
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            margin-top: 1rem;
-            box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
-            transition: all 0.25s ease;
+            background: #10B981; color: white; padding: 0.85rem 1.75rem; border-radius: 12px;
+            text-decoration: none; font-weight: 700; display: inline-flex; align-items: center; gap: 0.5rem;
+            margin-top: 1rem; box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3); transition: all 0.25s ease;
         }
-        .btn-download:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4); }
-
-        .spinner {
-            display: none;
-            width: 24px;
-            height: 24px;
-            border: 3px solid rgba(255, 255, 255, 0.3);
-            border-radius: 50%;
-            border-top-color: white;
-            animation: spin 0.8s linear infinite;
-        }
+        .btn-download i { width: 20px; height: 20px; }
+        .btn-download:hover { background: #059669; transform: translateY(-2px); box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4); }
+        .spinner { display: none; width: 20px; height: 20px; border: 3px solid rgba(255, 255, 255, 0.3); border-radius: 50%; border-top-color: white; animation: spin 0.8s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
-
-        footer { border-top: 1px solid var(--card-border); text-align: center; padding: 1.5rem; color: var(--text-muted); font-size: 0.9rem; }
+        footer { border-top: 1px solid var(--card-border); text-align: center; padding: 1.75rem 1.5rem; color: var(--text-muted); font-size: 0.88rem; background: rgba(6, 21, 23, 0.9); }
+        footer a { color: var(--mywebby-orange); text-decoration: none; font-weight: 600; }
+        footer a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
     <header>
         <div class="navbar">
-            <a href="#" class="logo">
-                <div class="logo-icon"><i class="fa-solid fa-file-pdf"></i></div>
-                <span>PDF Auto Editor</span>
+            <a href="https://mywebby.it" target="_blank" class="brand-logo">
+                <div class="logo-badge">we</div>
+                <span class="brand-text">mywebby</span>
+                <span class="brand-subtitle">PDF Tools</span>
             </a>
             <div class="badge-render">
                 <div class="badge-pulse"></div>
@@ -542,23 +443,23 @@ HTML_EMBEDDED = """<!DOCTYPE html>
 
     <main>
         <section class="hero">
-            <h1>Modifica i tuoi PDF con facilità 🚀</h1>
-            <p>Unisci, dividi, ruota, comprimi e proteggi i tuoi file in pochi secondi. 100% gratuito e sicuro.</p>
+            <h1>Gestione e Modifica Avanzata dei PDF</h1>
+            <p>Unisci, dividi, ruota, comprimi e proteggi i tuoi documenti in modo rapido e sicuro.</p>
         </section>
 
         <div class="tabs-container">
-            <button class="tab-btn active" onclick="switchTool('merge')"><i class="fa-solid fa-object-group"></i> Unisci PDF</button>
-            <button class="tab-btn" onclick="switchTool('split')"><i class="fa-solid fa-scissors"></i> Dividi Pagine</button>
-            <button class="tab-btn" onclick="switchTool('rotate')"><i class="fa-solid fa-rotate-right"></i> Ruota Pagine</button>
-            <button class="tab-btn" onclick="switchTool('compress')"><i class="fa-solid fa-file-contract"></i> Comprimi</button>
-            <button class="tab-btn" onclick="switchTool('watermark')"><i class="fa-solid fa-stamp"></i> Filigrana</button>
-            <button class="tab-btn" onclick="switchTool('extract')"><i class="fa-solid fa-file-lines"></i> Estrai Testo</button>
-            <button class="tab-btn" onclick="switchTool('protect')"><i class="fa-solid fa-lock"></i> Proteggi</button>
+            <button class="tab-btn active" onclick="switchTool('merge')"><i data-lucide="layers"></i> Unisci PDF</button>
+            <button class="tab-btn" onclick="switchTool('split')"><i data-lucide="scissors"></i> Dividi Pagine</button>
+            <button class="tab-btn" onclick="switchTool('rotate')"><i data-lucide="rotate-cw"></i> Ruota Pagine</button>
+            <button class="tab-btn" onclick="switchTool('compress')"><i data-lucide="minimize-2"></i> Comprimi</button>
+            <button class="tab-btn" onclick="switchTool('watermark')"><i data-lucide="stamp"></i> Filigrana</button>
+            <button class="tab-btn" onclick="switchTool('extract')"><i data-lucide="file-text"></i> Estrai Testo</button>
+            <button class="tab-btn" onclick="switchTool('protect')"><i data-lucide="lock"></i> Proteggi</button>
         </div>
 
         <div class="workspace-card">
             <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
-                <div class="dropzone-icon"><i class="fa-solid fa-cloud-arrow-up"></i></div>
+                <div class="dropzone-icon"><i data-lucide="upload-cloud"></i></div>
                 <h3 style="margin-bottom: 0.5rem; font-size: 1.2rem;">Trascina qui i tuoi file PDF</h3>
                 <p style="color: var(--text-muted); font-size: 0.9rem;">oppure clicca per selezionare dal tuo computer</p>
                 <input type="file" id="fileInput" class="file-input" accept=".pdf" multiple onchange="handleFileSelect(event)">
@@ -567,9 +468,9 @@ HTML_EMBEDDED = """<!DOCTYPE html>
             <div class="file-list" id="fileList"></div>
 
             <div class="tool-panel active" id="panel-merge">
-                <p style="color: var(--text-muted); margin-bottom: 1rem; font-size: 0.9rem;">Seleziona 2 o più file PDF per unirli in un unico documento.</p>
+                <p style="color: var(--text-muted); margin-bottom: 1.25rem; font-size: 0.9rem;">Seleziona 2 o più file PDF per unirli in un unico documento.</p>
                 <button class="btn-action" id="btn-merge" onclick="executeMerge()" disabled>
-                    <div class="spinner" id="spinner-merge"></div> <i class="fa-solid fa-object-group"></i> Unisci PDF Ora
+                    <div class="spinner" id="spinner-merge"></div> <i data-lucide="layers"></i> Unisci PDF Ora
                 </button>
             </div>
 
@@ -579,7 +480,7 @@ HTML_EMBEDDED = """<!DOCTYPE html>
                     <input type="text" id="split-pages" class="form-control" placeholder="Lascia vuoto per estrarre tutte le pagine">
                 </div>
                 <button class="btn-action" id="btn-split" onclick="executeSplit()" disabled>
-                    <div class="spinner" id="spinner-split"></div> <i class="fa-solid fa-scissors"></i> Dividi PDF Ora
+                    <div class="spinner" id="spinner-split"></div> <i data-lucide="scissors"></i> Dividi PDF Ora
                 </button>
             </div>
 
@@ -593,14 +494,14 @@ HTML_EMBEDDED = """<!DOCTYPE html>
                     </select>
                 </div>
                 <button class="btn-action" id="btn-rotate" onclick="executeRotate()" disabled>
-                    <div class="spinner" id="spinner-rotate"></div> <i class="fa-solid fa-rotate-right"></i> Ruota PDF Ora
+                    <div class="spinner" id="spinner-rotate"></div> <i data-lucide="rotate-cw"></i> Ruota PDF Ora
                 </button>
             </div>
 
             <div class="tool-panel" id="panel-compress">
-                <p style="color: var(--text-muted); margin-bottom: 1rem; font-size: 0.9rem;">Riduce le dimensioni del file ottimizzando il documento.</p>
+                <p style="color: var(--text-muted); margin-bottom: 1.25rem; font-size: 0.9rem;">Riduce le dimensioni del file ottimizzando il documento.</p>
                 <button class="btn-action" id="btn-compress" onclick="executeCompress()" disabled>
-                    <div class="spinner" id="spinner-compress"></div> <i class="fa-solid fa-file-contract"></i> Comprimi PDF Ora
+                    <div class="spinner" id="spinner-compress"></div> <i data-lucide="minimize-2"></i> Comprimi PDF Ora
                 </button>
             </div>
 
@@ -610,14 +511,14 @@ HTML_EMBEDDED = """<!DOCTYPE html>
                     <input type="text" id="watermark-text" class="form-control" value="RISERVATO">
                 </div>
                 <button class="btn-action" id="btn-watermark" onclick="executeWatermark()" disabled>
-                    <div class="spinner" id="spinner-watermark"></div> <i class="fa-solid fa-stamp"></i> Applica Filigrana
+                    <div class="spinner" id="spinner-watermark"></div> <i data-lucide="stamp"></i> Applica Filigrana
                 </button>
             </div>
 
             <div class="tool-panel" id="panel-extract">
-                <p style="color: var(--text-muted); margin-bottom: 1rem; font-size: 0.9rem;">Estrai tutto il testo contenuto nel PDF in formato TXT pulito.</p>
+                <p style="color: var(--text-muted); margin-bottom: 1.25rem; font-size: 0.9rem;">Estrai tutto il testo contenuto nel PDF in formato TXT pulito.</p>
                 <button class="btn-action" id="btn-extract" onclick="executeExtractText()" disabled>
-                    <div class="spinner" id="spinner-extract"></div> <i class="fa-solid fa-file-lines"></i> Estrai Testo Ora
+                    <div class="spinner" id="spinner-extract"></div> <i data-lucide="file-text"></i> Estrai Testo Ora
                 </button>
             </div>
 
@@ -627,24 +528,25 @@ HTML_EMBEDDED = """<!DOCTYPE html>
                     <input type="password" id="protect-password" class="form-control" placeholder="Inserisci una password sicura">
                 </div>
                 <button class="btn-action" id="btn-protect" onclick="executeProtect()" disabled>
-                    <div class="spinner" id="spinner-protect"></div> <i class="fa-solid fa-lock"></i> Proteggi PDF con Password
+                    <div class="spinner" id="spinner-protect"></div> <i data-lucide="lock"></i> Proteggi PDF con Password
                 </button>
             </div>
 
             <div class="result-box" id="resultBox">
-                <i class="fa-solid fa-circle-check" style="font-size: 2.5rem; color: #10B981; margin-bottom: 0.5rem;"></i>
+                <i data-lucide="check-circle"></i>
                 <h3 style="font-size: 1.25rem;">Operazione Completata con Successo!</h3>
-                <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 0.25rem;">Il tuo nuovo file è pronto.</p>
-                <a href="#" id="downloadLink" class="btn-download" download><i class="fa-solid fa-download"></i> Scarica File Elaborato</a>
+                <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 0.25rem;">Il tuo nuovo file è pronto per il download.</p>
+                <a href="#" id="downloadLink" class="btn-download" download><i data-lucide="download"></i> Scarica File Elaborato</a>
             </div>
         </div>
     </main>
 
     <footer>
-        <p>PDF Auto Editor • Powered by Python 3 & FastAPI • Online su Render.com 🚀</p>
+        <p>Progetto realizzato da © <span id="currentYear"></span> <strong>MyWebby Agency</strong>. P.IVA 02369290180. Tutti i diritti riservati.</p>
     </footer>
 
     <script>
+        document.getElementById('currentYear').textContent = new Date().getFullYear();
         let selectedFiles = [];
         let currentTool = 'merge';
 
@@ -671,16 +573,17 @@ HTML_EMBEDDED = """<!DOCTYPE html>
                 listEl.innerHTML += `
                     <div class="file-item">
                         <div class="file-info">
-                            <i class="fa-solid fa-file-pdf" style="color: #6366F1; font-size: 1.3rem;"></i>
+                            <i data-lucide="file"></i>
                             <div>
                                 <div class="file-name">${file.name}</div>
                                 <div class="file-size">${sizeMb} MB</div>
                             </div>
                         </div>
-                        <button class="btn-remove" onclick="removeFile(${idx})"><i class="fa-solid fa-trash-can"></i></button>
+                        <button class="btn-remove" onclick="removeFile(${idx})"><i data-lucide="trash-2"></i></button>
                     </div>
                 `;
             });
+            lucide.createIcons();
         }
 
         function removeFile(index) {
@@ -724,6 +627,7 @@ HTML_EMBEDDED = """<!DOCTYPE html>
             downloadLink.download = filename;
             document.getElementById('resultBox').classList.add('active');
             document.getElementById('resultBox').scrollIntoView({ behavior: 'smooth' });
+            lucide.createIcons();
         }
 
         async function executeMerge() {
@@ -822,6 +726,8 @@ HTML_EMBEDDED = """<!DOCTYPE html>
             } catch (err) { alert('Errore: ' + err.message); }
             finally { showLoading('protect', false); }
         }
+
+        lucide.createIcons();
     </script>
 </body>
 </html>"""
