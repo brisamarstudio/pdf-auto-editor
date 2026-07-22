@@ -13,7 +13,7 @@ from pypdf import PdfReader, PdfWriter
 app = FastAPI(
     title="PDF Auto Editor API - MyWebby Agency",
     description="Microservizio veloce e potente per la gestione automatica e conversione intelligente di PDF in Moduli Compilabili.",
-    version="1.1.0"
+    version="1.3.0"
 )
 
 app.add_middleware(
@@ -26,9 +26,13 @@ app.add_middleware(
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
+IMAGES_DIR = os.path.join(BASE_DIR, "images")
 
 if os.path.exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+if os.path.exists(IMAGES_DIR):
+    app.mount("/images", StaticFiles(directory=IMAGES_DIR), name="images")
 
 INDEX_HTML_PATH = os.path.join(STATIC_DIR, "index.html")
 
@@ -48,101 +52,124 @@ async def serve_index():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "agency": "MyWebby Agency", "service": "pdf-auto-editor", "version": "1.1.0"}
+    return {"status": "ok", "agency": "MyWebby Agency", "service": "pdf-auto-editor", "version": "1.3.0"}
+
+
+def process_single_pdf_to_fillable(content: bytes) -> tuple[bytes, int, int]:
+    doc = fitz.open(stream=content, filetype="pdf")
+    text_fields_count = 0
+    checkboxes_count = 0
+
+    for page_num, page in enumerate(doc):
+        # A) Underscores -> Text Fields
+        underscore_rects = page.search_for("___")
+        merged_text_rects = []
+        for rect in underscore_rects:
+            if not merged_text_rects:
+                merged_text_rects.append(rect)
+            else:
+                last = merged_text_rects[-1]
+                if abs(last.y0 - rect.y0) < 4 and (rect.x0 - last.x1) < 15:
+                    merged_text_rects[-1] = fitz.Rect(last.x0, min(last.y0, rect.y0), max(last.x1, rect.x1), max(last.y1, rect.y1))
+                else:
+                    merged_text_rects.append(rect)
+
+        for i, rect in enumerate(merged_text_rects):
+            text_fields_count += 1
+            widget = fitz.Widget()
+            widget.field_name = f"Campo_Testo_P{page_num + 1}_{i + 1}"
+            widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+            field_rect = fitz.Rect(rect.x0, rect.y0 - 4, rect.x1, rect.y1 + 2)
+            widget.rect = field_rect
+            widget.border_color = (0.7, 0.7, 0.7)
+            widget.border_width = 0.5
+            widget.fill_color = (0.94, 0.97, 1.0)
+            widget.text_color = (0, 0, 0)
+            widget.text_fontsize = 10
+            page.add_widget(widget)
+
+        # B) Checkbox Symbols & Drawings -> Checkboxes
+        checkbox_rects = []
+        for symbol in ["☐", "□", "[ ]", "▫", "■"]:
+            checkbox_rects.extend(page.search_for(symbol))
+
+        drawings = page.get_drawings()
+        for draw in drawings:
+            for item in draw.get("items", []):
+                if item[0] == "re":
+                    r = item[1]
+                    w, h = r.width, r.height
+                    if 6 <= w <= 20 and 6 <= h <= 20 and abs(w - h) < 3:
+                        checkbox_rects.append(r)
+
+        unique_checkbox_rects = []
+        for r in checkbox_rects:
+            if not any(abs(u.x0 - r.x0) < 5 and abs(u.y0 - r.y0) < 5 for u in unique_checkbox_rects):
+                unique_checkbox_rects.append(r)
+
+        for j, rect in enumerate(unique_checkbox_rects):
+            checkboxes_count += 1
+            widget = fitz.Widget()
+            widget.field_name = f"Spunta_P{page_num + 1}_{j + 1}"
+            widget.field_type = fitz.PDF_WIDGET_TYPE_CHECKBOX
+            widget.rect = fitz.Rect(rect.x0 - 1, rect.y0 - 1, rect.x1 + 1, rect.y1 + 1)
+            widget.border_color = (0.4, 0.4, 0.4)
+            widget.border_width = 1
+            widget.fill_color = (1.0, 1.0, 1.0)
+            page.add_widget(widget)
+
+    out_bytes = doc.tobytes(garbage=4, deflate=True)
+    doc.close()
+    return out_bytes, text_fields_count, checkboxes_count
 
 
 @app.post("/api/make-fillable")
-async def make_fillable_pdf(file: UploadFile = File(...)):
+async def make_fillable_pdf(files: List[UploadFile] = File(...)):
     """
-    SMART PDF FORM ANALYZER & CONVERTER
-    Analizza automaticamente il PDF alla ricerca di:
-    1. Linee o trattini di sottolineatura (______) -> Convertiti in Campi di Testo compilabili (Text Inputs)
-    2. Simboli di spunta o quadrati (☐, □, [ ]) -> Convertiti in Caselle di Controllo cliccabili (Checkboxes)
-    3. Tratti vettoriali orizzontali e riquadri modulari.
+    SMART PDF FORM ANALYZER (Supporta file singolo o MULTI DRAG & DROP BATCH)
     """
-    content = await file.read()
-    try:
-        doc = fitz.open(stream=content, filetype="pdf")
-        total_fields_created = 0
+    if not files:
+        raise HTTPException(status_code=400, detail="Nessun file PDF caricato.")
 
-        for page_num, page in enumerate(doc):
-            # A) ANALISI CAMPI TESTUALI (Underscores _____ )
-            underscore_rects = page.search_for("___")
-            
-            # Raggruppa rettangoli di underscore consecutivi sulla stessa riga
-            merged_text_rects = []
-            for rect in underscore_rects:
-                if not merged_text_rects:
-                    merged_text_rects.append(rect)
-                else:
-                    last = merged_text_rects[-1]
-                    # Se sono sulla stessa riga y (tolleranza 3px) e vicini in x
-                    if abs(last.y0 - rect.y0) < 4 and (rect.x0 - last.x1) < 15:
-                        merged_text_rects[-1] = fitz.Rect(last.x0, min(last.y0, rect.y0), max(last.x1, rect.x1), max(last.y1, rect.y1))
-                    else:
-                        merged_text_rects.append(rect)
-
-            for i, rect in enumerate(merged_text_rects):
-                total_fields_created += 1
-                widget = fitz.Widget()
-                widget.field_name = f"Campo_Testo_P{page_num + 1}_{i + 1}"
-                widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
-                # Espandi leggermente l'area per rendere la digitazione comoda
-                field_rect = fitz.Rect(rect.x0, rect.y0 - 4, rect.x1, rect.y1 + 2)
-                widget.rect = field_rect
-                widget.border_color = (0.7, 0.7, 0.7)
-                widget.border_width = 0.5
-                widget.fill_color = (0.94, 0.97, 1.0)  # Sfondo azzurro tenue compilabile
-                widget.text_color = (0, 0, 0)
-                widget.text_fontsize = 10
-                page.add_widget(widget)
-
-            # B) ANALISI CASELLE DI SPUNTA (Checkboxes ☐, □, [ ])
-            checkbox_rects = []
-            for symbol in ["☐", "□", "[ ]", "▫", "■"]:
-                checkbox_rects.extend(page.search_for(symbol))
-
-            # Analisi anche dei piccoli quadrati vettoriali dalle linee del PDF
-            drawings = page.get_drawings()
-            for draw in drawings:
-                for item in draw.get("items", []):
-                    if item[0] == "re":  # Rettangolo vettoriale
-                        r = item[1]
-                        w, h = r.width, r.height
-                        # Se è un quadratino di dimensioni tipiche di una checkbox (6px - 18px)
-                        if 6 <= w <= 20 and 6 <= h <= 20 and abs(w - h) < 3:
-                            checkbox_rects.append(r)
-
-            # Rimuovi rettangoli duplicati o sovrapposti
-            unique_checkbox_rects = []
-            for r in checkbox_rects:
-                if not any(abs(u.x0 - r.x0) < 5 and abs(u.y0 - r.y0) < 5 for u in unique_checkbox_rects):
-                    unique_checkbox_rects.append(r)
-
-            for j, rect in enumerate(unique_checkbox_rects):
-                total_fields_created += 1
-                widget = fitz.Widget()
-                widget.field_name = f"Spunta_P{page_num + 1}_{j + 1}"
-                widget.field_type = fitz.PDF_WIDGET_TYPE_CHECKBOX
-                widget.rect = fitz.Rect(rect.x0 - 1, rect.y0 - 1, rect.x1 + 1, rect.y1 + 1)
-                widget.border_color = (0.4, 0.4, 0.4)
-                widget.border_width = 1
-                widget.fill_color = (1.0, 1.0, 1.0)
-                page.add_widget(widget)
-
-        out_bytes = doc.tobytes(garbage=4, deflate=True)
-        doc.close()
-
+    if len(files) == 1:
+        file = files[0]
+        content = await file.read()
+        out_bytes, t_count, c_count = process_single_pdf_to_fillable(content)
+        total_created = t_count + c_count
         return Response(
             content=out_bytes,
             media_type="application/pdf",
             headers={
-                "Content-Disposition": "attachment; filename=pdf_compilabile_interattivo.pdf",
-                "X-Fields-Created": str(total_fields_created)
+                "Content-Disposition": f"attachment; filename={file.filename.replace('.pdf', '')}_compilabile.pdf",
+                "X-Text-Fields": str(t_count),
+                "X-Checkboxes": str(c_count),
+                "X-Fields-Created": str(total_created)
             }
         )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore generazione modulo compilabile: {str(e)}")
+
+    # Multi-file Batch Processing -> Output ZIP
+    zip_buffer = io.BytesIO()
+    total_t = 0
+    total_c = 0
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for file in files:
+            content = await file.read()
+            out_bytes, t_c, c_c = process_single_pdf_to_fillable(content)
+            total_t += t_c
+            total_c += c_c
+            zip_file.writestr(f"{file.filename.replace('.pdf', '')}_compilabile.pdf", out_bytes)
+
+    zip_bytes = zip_buffer.getvalue()
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": "attachment; filename=moduli_compilabili_batch.zip",
+            "X-Text-Fields": str(total_t),
+            "X-Checkboxes": str(total_c),
+            "X-Fields-Created": str(total_t + total_c)
+        }
+    )
 
 
 @app.post("/api/merge")
@@ -162,7 +189,7 @@ async def merge_pdfs(files: List[UploadFile] = File(...)):
         return Response(
             content=out_bytes,
             media_type="application/pdf",
-            headers={"Content-Disposition": "attachment; filename=merged.pdf"}
+            headers={"Content-Disposition": "attachment; filename=pdf_unito.pdf"}
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore durante l'unione: {str(e)}")
@@ -336,10 +363,10 @@ HTML_EMBEDDED = """<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PDF Auto Editor - MyWebby Agency</title>
-    <meta name="description" content="Strumento professionale per la gestione e conversione automatica di PDF statici in Moduli Compilabili. Realizzato da MyWebby Agency.">
+    <meta name="description" content="Edita il tuo PDF e rendi i campi compilabili in modo automatico. Realizzato da MyWebby Agency.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         :root {
@@ -383,20 +410,13 @@ HTML_EMBEDDED = """<!DOCTYPE html>
             justify-content: space-between;
             align-items: center;
         }
-        .brand-logo { display: flex; align-items: center; gap: 0.75rem; text-decoration: none; }
-        .logo-badge {
-            background: var(--mywebby-orange);
-            color: white;
-            font-family: 'Outfit', sans-serif;
-            font-weight: 800;
-            font-size: 1.1rem;
-            padding: 0.35rem 0.65rem;
-            border-radius: 8px;
-            transform: rotate(-3deg);
-            box-shadow: 0 4px 12px var(--mywebby-orange-glow);
+        .brand-logo { display: flex; align-items: center; gap: 0.6rem; text-decoration: none; }
+        .brand-logo img { height: 42px; width: auto; object-fit: contain; }
+        .brand-subtitle {
+            color: var(--mywebby-orange); font-weight: 600; font-size: 0.85rem;
+            background: rgba(240, 91, 40, 0.1); padding: 0.25rem 0.65rem;
+            border-radius: 6px; border: 1px solid rgba(240, 91, 40, 0.2);
         }
-        .brand-text { font-family: 'Outfit', sans-serif; font-weight: 700; font-size: 1.35rem; color: white; }
-        .brand-subtitle { color: var(--mywebby-orange); font-weight: 600; font-size: 0.85rem; margin-left: 0.25rem; }
         .badge-render {
             background: rgba(16, 185, 129, 0.12);
             border: 1px solid rgba(16, 185, 129, 0.3);
@@ -506,6 +526,15 @@ HTML_EMBEDDED = """<!DOCTYPE html>
         .btn-remove { background: transparent; border: none; color: #EF4444; cursor: pointer; padding: 0.4rem; border-radius: 6px; display: flex; align-items: center; }
         .btn-remove i { width: 18px; height: 18px; }
         .btn-remove:hover { background: rgba(239, 68, 68, 0.15); }
+        .stats-badge-container {
+            display: flex; gap: 1rem; justify-content: center; margin: 1rem 0;
+        }
+        .stat-badge {
+            background: rgba(240, 91, 40, 0.1); border: 1px solid rgba(240, 91, 40, 0.25);
+            padding: 0.5rem 1rem; border-radius: 10px; font-size: 0.85rem; color: #F3F4F6;
+            display: flex; align-items: center; gap: 0.4rem;
+        }
+        .stat-badge strong { color: var(--mywebby-orange); font-size: 0.95rem; }
         .result-box { display: none; margin-top: 1.5rem; padding: 1.5rem; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 16px; text-align: center; }
         .result-box.active { display: block; animation: fadeIn 0.3s ease forwards; }
         .result-box i[data-lucide="check-circle"] { width: 48px; height: 48px; color: #10B981; margin-bottom: 0.5rem; }
@@ -527,8 +556,7 @@ HTML_EMBEDDED = """<!DOCTYPE html>
     <header>
         <div class="navbar">
             <a href="https://mywebby.it" target="_blank" class="brand-logo">
-                <div class="logo-badge">we</div>
-                <span class="brand-text">mywebby</span>
+                <img src="/images/MWbianco.png" alt="MyWebby Agency" onerror="this.onerror=null; this.src='https://mywebby.it/assets/img/logo-bianco.png';" />
                 <span class="brand-subtitle">PDF Tools</span>
             </a>
             <div class="badge-render">
@@ -540,12 +568,14 @@ HTML_EMBEDDED = """<!DOCTYPE html>
 
     <main>
         <section class="hero">
-            <h1>Gestione e Conversione Intelligente dei PDF</h1>
-            <p>Converti automaticamente documenti statici con righe e quadrati in Moduli PDF Interattivi Compilabili.</p>
+            <h1>Edita il tuo PDF e Rendi i Campi Compilabili</h1>
+            <p>Trasforma automaticamente qualsiasi documento PDF statico in un modulo interattivo con campi di testo digitabili e spunte cliccabili.</p>
         </section>
 
         <div class="tabs-container">
-            <button class="tab-btn active highlight" onclick="switchTool('make-fillable')"><i data-lucide="sparkles"></i> Rendi Compilabile (Smart Analyzer)</button>
+            <button class="tab-btn active highlight" onclick="switchTool('make-fillable')">
+                <i data-lucide="sparkles"></i> Crea Campi Compilabili
+            </button>
             <button class="tab-btn" onclick="switchTool('merge')"><i data-lucide="layers"></i> Unisci PDF</button>
             <button class="tab-btn" onclick="switchTool('split')"><i data-lucide="scissors"></i> Dividi Pagine</button>
             <button class="tab-btn" onclick="switchTool('rotate')"><i data-lucide="rotate-cw"></i> Ruota Pagine</button>
@@ -558,25 +588,24 @@ HTML_EMBEDDED = """<!DOCTYPE html>
         <div class="workspace-card">
             <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
                 <div class="dropzone-icon"><i data-lucide="upload-cloud"></i></div>
-                <h3 style="margin-bottom: 0.5rem; font-size: 1.2rem;">Trascina qui il tuo modulo PDF statico</h3>
+                <h3 style="margin-bottom: 0.5rem; font-size: 1.2rem;">Trascina qui uno o più documenti PDF (Multi Drag & Drop)</h3>
                 <p style="color: var(--text-muted); font-size: 0.9rem;">oppure clicca per selezionare dal tuo computer</p>
                 <input type="file" id="fileInput" class="file-input" accept=".pdf" multiple onchange="handleFileSelect(event)">
             </div>
 
             <div class="file-list" id="fileList"></div>
 
-            <!-- SMART MAKE FILLABLE PANEL -->
             <div class="tool-panel active" id="panel-make-fillable">
                 <div style="background: rgba(240, 91, 40, 0.08); border: 1px solid rgba(240, 91, 40, 0.25); border-radius: 12px; padding: 1.25rem; margin-bottom: 1.25rem;">
                     <h4 style="font-size: 1rem; color: #FFFFFF; font-weight: 700; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.5rem;">
-                        <i data-lucide="wand-2" style="color: var(--mywebby-orange); width: 20px; height: 20px;"></i> Smart PDF Form Analyzer
+                        <i data-lucide="wand-2" style="color: var(--mywebby-orange); width: 20px; height: 20px;"></i> Conversione Automatica in Modulo Compilabile
                     </h4>
                     <p style="color: var(--text-muted); font-size: 0.88rem; line-height: 1.5;">
-                        Il sistema analizzerà automaticamente le sottolineature (<strong>_______</strong>), le linee di testo e i quadrati di spunta (<strong>☐</strong>, <strong>□</strong>, o riquadri vettoriali) del tuo documento, convertendoli in <strong>Campi di Testo compilabili</strong> e <strong>Caselle di Spunta cliccabili</strong> direttamente nel browser o su smartphone!
+                        Il sistema analizzerà le sottolineature (<strong>_______</strong>) e i quadrati di spunta (<strong>☐</strong>, <strong>□</strong>) dei tuoi PDF per trasformarli in <strong>campi di testo digitabili</strong> e <strong>spunte cliccabili</strong> pronti all'uso su PC e smartphone! (Se carichi più PDF, scaricherai un pacchetto ZIP completo).
                     </p>
                 </div>
                 <button class="btn-action" id="btn-make-fillable" onclick="executeMakeFillable()" disabled>
-                    <div class="spinner" id="spinner-make-fillable"></div> <i data-lucide="sparkles"></i> Analizza e Rendi PDF Compilabile Ora
+                    <div class="spinner" id="spinner-make-fillable"></div> <i data-lucide="sparkles"></i> Crea Campi Compilabili Ora
                 </button>
             </div>
 
@@ -648,6 +677,10 @@ HTML_EMBEDDED = """<!DOCTYPE html>
             <div class="result-box" id="resultBox">
                 <i data-lucide="check-circle"></i>
                 <h3 style="font-size: 1.25rem;">Operazione Completata con Successo!</h3>
+                <div class="stats-badge-container" id="statsContainer" style="display: none;">
+                    <div class="stat-badge"><i data-lucide="form-input"></i> Campi Testo: <strong id="statTextCount">0</strong></div>
+                    <div class="stat-badge"><i data-lucide="check-square"></i> Caselle Spunta: <strong id="statCheckCount">0</strong></div>
+                </div>
                 <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 0.25rem;" id="resultMessage">Il tuo Modulo PDF Interattivo e Compilabile è pronto!</p>
                 <a href="#" id="downloadLink" class="btn-download" download><i data-lucide="download"></i> Scarica Modulo PDF Compilabile</a>
             </div>
@@ -734,13 +767,20 @@ HTML_EMBEDDED = """<!DOCTYPE html>
             spinner.style.display = isLoading ? 'inline-block' : 'none';
         }
 
-        function showResult(blob, filename, message) {
+        function showResult(blob, filename, message, stats) {
             const url = URL.createObjectURL(blob);
             const downloadLink = document.getElementById('downloadLink');
             downloadLink.href = url;
             downloadLink.download = filename;
             if (message) {
                 document.getElementById('resultMessage').textContent = message;
+            }
+            if (stats) {
+                document.getElementById('statTextCount').textContent = stats.textCount || '0';
+                document.getElementById('statCheckCount').textContent = stats.checkCount || '0';
+                document.getElementById('statsContainer').style.display = 'flex';
+            } else {
+                document.getElementById('statsContainer').style.display = 'none';
             }
             document.getElementById('resultBox').classList.add('active');
             document.getElementById('resultBox').scrollIntoView({ behavior: 'smooth' });
@@ -751,14 +791,24 @@ HTML_EMBEDDED = """<!DOCTYPE html>
             if (selectedFiles.length === 0) return;
             showLoading('make-fillable', true);
             const formData = new FormData();
-            formData.append('file', selectedFiles[0]);
+            selectedFiles.forEach(f => formData.append('files', f));
 
             try {
                 const res = await fetch('/api/make-fillable', { method: 'POST', body: formData });
                 if (!res.ok) throw new Error('Errore durante la conversione in modulo compilabile');
-                const createdFields = res.headers.get('X-Fields-Created') || 'diversi';
+                
+                const tCount = res.headers.get('X-Text-Fields') || '0';
+                const cCount = res.headers.get('X-Checkboxes') || '0';
+                const totalCreated = res.headers.get('X-Fields-Created') || 'diversi';
+                const isZip = res.headers.get('content-type').includes('zip');
                 const blob = await res.blob();
-                showResult(blob, 'modulo_pdf_compilabile.pdf', `Creati ${createdFields} campi interattivi (Testo e Caselle di spunta)!`);
+                
+                showResult(
+                    blob, 
+                    isZip ? 'moduli_compilabili_batch.zip' : `${selectedFiles[0].name.replace('.pdf', '')}_compilabile.pdf`, 
+                    `Creati con successo ${totalCreated} campi interattivi!`,
+                    { textCount: tCount, checkCount: cCount }
+                );
             } catch (err) {
                 alert('Si è verificato un errore: ' + err.message);
             } finally {
@@ -866,10 +916,4 @@ HTML_EMBEDDED = """<!DOCTYPE html>
         lucide.createIcons();
     </script>
 </body>
-</html>"""
-
-
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+</html>
