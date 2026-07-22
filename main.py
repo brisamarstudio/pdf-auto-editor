@@ -16,7 +16,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Enable CORS for external API integrations if needed
+# Enable CORS for external API integrations
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,18 +25,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Static files directory path
-STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+
 if os.path.exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 async def serve_index():
     index_path = os.path.join(STATIC_DIR, "index.html")
     if os.path.exists(index_path):
-        with open(index_path, "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
+        return FileResponse(index_path, media_type="text/html")
     return HTMLResponse("<h2>PDF Auto Editor API is running!</h2>")
 
 
@@ -77,7 +77,6 @@ async def split_pdf(file: UploadFile = File(...), pages: Optional[str] = Form(No
         doc = fitz.open(stream=content, filetype="pdf")
         total_pages = len(doc)
         
-        # Parse requested pages or default to all pages
         selected_indices = []
         if pages and pages.strip():
             parts = pages.split(",")
