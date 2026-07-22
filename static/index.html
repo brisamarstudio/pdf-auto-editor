@@ -1,15 +1,340 @@
-<!DOCTYPE html>
+import os
+import io
+import zipfile
+import base64
+from typing import List, Optional
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+import fitz  # PyMuPDF
+from pypdf import PdfReader, PdfWriter
+
+app = FastAPI(
+    title="PDF Auto Editor API - MyWebby Agency",
+    description="Microservizio veloce e potente per la gestione automatica e conversione intelligente di PDF in Moduli Compilabili.",
+    version="1.2.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+IMAGES_DIR = os.path.join(BASE_DIR, "images")
+
+if os.path.exists(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+if os.path.exists(IMAGES_DIR):
+    app.mount("/images", StaticFiles(directory=IMAGES_DIR), name="images")
+
+INDEX_HTML_PATH = os.path.join(STATIC_DIR, "index.html")
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_index():
+    if os.path.exists(INDEX_HTML_PATH):
+        with open(INDEX_HTML_PATH, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    
+    cwd_static = os.path.join(os.getcwd(), "static", "index.html")
+    if os.path.exists(cwd_static):
+        with open(cwd_static, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+
+    return HTMLResponse(content=HTML_EMBEDDED)
+
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "agency": "MyWebby Agency", "service": "pdf-auto-editor", "version": "1.2.0"}
+
+
+@app.post("/api/make-fillable")
+async def make_fillable_pdf(file: UploadFile = File(...)):
+    """
+    Riconosce sottolineature (_____) e quadrati di spunta (☐, □) nel PDF
+    e li trasforma in veri campi di testo e caselle di controllo compilabili.
+    """
+    content = await file.read()
+    try:
+        doc = fitz.open(stream=content, filetype="pdf")
+        total_fields_created = 0
+
+        for page_num, page in enumerate(doc):
+            # A) ANALISI CAMPI TESTUALI (Underscores _____ )
+            underscore_rects = page.search_for("___")
+            
+            merged_text_rects = []
+            for rect in underscore_rects:
+                if not merged_text_rects:
+                    merged_text_rects.append(rect)
+                else:
+                    last = merged_text_rects[-1]
+                    if abs(last.y0 - rect.y0) < 4 and (rect.x0 - last.x1) < 15:
+                        merged_text_rects[-1] = fitz.Rect(last.x0, min(last.y0, rect.y0), max(last.x1, rect.x1), max(last.y1, rect.y1))
+                    else:
+                        merged_text_rects.append(rect)
+
+            for i, rect in enumerate(merged_text_rects):
+                total_fields_created += 1
+                widget = fitz.Widget()
+                widget.field_name = f"Campo_Testo_P{page_num + 1}_{i + 1}"
+                widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+                field_rect = fitz.Rect(rect.x0, rect.y0 - 4, rect.x1, rect.y1 + 2)
+                widget.rect = field_rect
+                widget.border_color = (0.7, 0.7, 0.7)
+                widget.border_width = 0.5
+                widget.fill_color = (0.94, 0.97, 1.0)
+                widget.text_color = (0, 0, 0)
+                widget.text_fontsize = 10
+                page.add_widget(widget)
+
+            # B) ANALISI CASELLE DI SPUNTA (Checkboxes ☐, □, [ ])
+            checkbox_rects = []
+            for symbol in ["☐", "□", "[ ]", "▫", "■"]:
+                checkbox_rects.extend(page.search_for(symbol))
+
+            drawings = page.get_drawings()
+            for draw in drawings:
+                for item in draw.get("items", []):
+                    if item[0] == "re":
+                        r = item[1]
+                        w, h = r.width, r.height
+                        if 6 <= w <= 20 and 6 <= h <= 20 and abs(w - h) < 3:
+                            checkbox_rects.append(r)
+
+            unique_checkbox_rects = []
+            for r in checkbox_rects:
+                if not any(abs(u.x0 - r.x0) < 5 and abs(u.y0 - r.y0) < 5 for u in unique_checkbox_rects):
+                    unique_checkbox_rects.append(r)
+
+            for j, rect in enumerate(unique_checkbox_rects):
+                total_fields_created += 1
+                widget = fitz.Widget()
+                widget.field_name = f"Spunta_P{page_num + 1}_{j + 1}"
+                widget.field_type = fitz.PDF_WIDGET_TYPE_CHECKBOX
+                widget.rect = fitz.Rect(rect.x0 - 1, rect.y0 - 1, rect.x1 + 1, rect.y1 + 1)
+                widget.border_color = (0.4, 0.4, 0.4)
+                widget.border_width = 1
+                widget.fill_color = (1.0, 1.0, 1.0)
+                page.add_widget(widget)
+
+        out_bytes = doc.tobytes(garbage=4, deflate=True)
+        doc.close()
+
+        return Response(
+            content=out_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": "attachment; filename=pdf_compilabile.pdf",
+                "X-Fields-Created": str(total_fields_created)
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore creazione campi compilabili: {str(e)}")
+
+
+@app.post("/api/merge")
+async def merge_pdfs(files: List[UploadFile] = File(...)):
+    if len(files) < 2:
+        raise HTTPException(status_code=400, detail="Fornire almeno 2 file PDF per l'unione.")
+    
+    merged_doc = fitz.open()
+    try:
+        for file in files:
+            content = await file.read()
+            src_doc = fitz.open(stream=content, filetype="pdf")
+            merged_doc.insert_pdf(src_doc)
+            src_doc.close()
+            
+        out_bytes = merged_doc.tobytes(garbage=4, deflate=True)
+        return Response(
+            content=out_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": "attachment; filename=merged.pdf"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore durante l'unione: {str(e)}")
+    finally:
+        merged_doc.close()
+
+
+@app.post("/api/split")
+async def split_pdf(file: UploadFile = File(...), pages: Optional[str] = Form(None)):
+    content = await file.read()
+    try:
+        doc = fitz.open(stream=content, filetype="pdf")
+        total_pages = len(doc)
+        
+        selected_indices = []
+        if pages and pages.strip():
+            parts = pages.split(",")
+            for part in parts:
+                part = part.strip()
+                if "-" in part:
+                    start_str, end_str = part.split("-")
+                    s = max(1, int(start_str))
+                    e = min(total_pages, int(end_str))
+                    selected_indices.extend(range(s - 1, e))
+                else:
+                    p = int(part)
+                    if 1 <= p <= total_pages:
+                        selected_indices.append(p - 1)
+        else:
+            selected_indices = list(range(total_pages))
+
+        selected_indices = sorted(list(set(selected_indices)))
+
+        if not selected_indices:
+            raise HTTPException(status_code=400, detail="Nessuna pagina valida selezionata.")
+
+        new_doc = fitz.open()
+        for idx in selected_indices:
+            new_doc.insert_pdf(doc, from_page=idx, to_page=idx)
+            
+        out_bytes = new_doc.tobytes(garbage=4, deflate=True)
+        new_doc.close()
+        doc.close()
+
+        return Response(
+            content=out_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": "attachment; filename=split_extracted.pdf"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore durante la divisione: {str(e)}")
+
+
+@app.post("/api/rotate")
+async def rotate_pdf(file: UploadFile = File(...), angle: int = Form(90)):
+    content = await file.read()
+    try:
+        doc = fitz.open(stream=content, filetype="pdf")
+        for page in doc:
+            page.set_rotation((page.rotation + angle) % 360)
+            
+        out_bytes = doc.tobytes(garbage=4, deflate=True)
+        doc.close()
+
+        return Response(
+            content=out_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": "attachment; filename=rotated.pdf"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore durante la rotazione: {str(e)}")
+
+
+@app.post("/api/compress")
+async def compress_pdf(file: UploadFile = File(...)):
+    content = await file.read()
+    try:
+        doc = fitz.open(stream=content, filetype="pdf")
+        out_bytes = doc.tobytes(garbage=4, deflate=True, clean=True)
+        doc.close()
+
+        return Response(
+            content=out_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": "attachment; filename=compressed.pdf"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore durante la compressione: {str(e)}")
+
+
+@app.post("/api/watermark")
+async def watermark_pdf(file: UploadFile = File(...), text: str = Form("RISERVATO")):
+    content = await file.read()
+    try:
+        doc = fitz.open(stream=content, filetype="pdf")
+        for page in doc:
+            rect = page.rect
+            point = fitz.Point(rect.width / 4, rect.height / 2)
+            page.insert_text(
+                point,
+                text,
+                fontsize=48,
+                color=(0.7, 0.7, 0.7),
+                rotate=45,
+                overlay=True
+            )
+            
+        out_bytes = doc.tobytes(garbage=4, deflate=True)
+        doc.close()
+
+        return Response(
+            content=out_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": "attachment; filename=watermarked.pdf"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore applicazione filigrana: {str(e)}")
+
+
+@app.post("/api/extract-text")
+async def extract_text(file: UploadFile = File(...)):
+    content = await file.read()
+    try:
+        doc = fitz.open(stream=content, filetype="pdf")
+        full_text = []
+        for i, page in enumerate(doc):
+            full_text.append(f"--- PAGINA {i + 1} ---\n")
+            full_text.append(page.get_text())
+            full_text.append("\n\n")
+            
+        doc.close()
+        text_output = "".join(full_text)
+
+        return Response(
+            content=text_output.encode("utf-8"),
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": "attachment; filename=extracted_text.txt"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore estrazione testo: {str(e)}")
+
+
+@app.post("/api/protect")
+async def protect_pdf(file: UploadFile = File(...), password: str = Form(...)):
+    content = await file.read()
+    try:
+        reader = PdfReader(io.BytesIO(content))
+        writer = PdfWriter()
+
+        for page in reader.pages:
+            writer.add_page(page)
+
+        writer.encrypt(user_password=password, owner_password=password)
+
+        out_stream = io.BytesIO()
+        writer.write(out_stream)
+        out_bytes = out_stream.getvalue()
+
+        return Response(
+            content=out_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": "attachment; filename=protected.pdf"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore durante protezione: {str(e)}")
+
+
+HTML_EMBEDDED = """<!DOCTYPE html>
 <html lang="it">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PDF Auto Editor - MyWebby Agency</title>
-    <meta name="description" content="Strumento professionale per la gestione e conversione automatica di PDF statici in Moduli Compilabili. Realizzato da MyWebby Agency.">
-    <!-- Google Fonts -->
+    <meta name="description" content="Edita il tuo PDF e rendi i campi compilabili in modo automatico. Realizzato da MyWebby Agency.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
-    <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         :root {
@@ -24,14 +349,7 @@
             --text-muted: #9CA3AF;
             --accent-emerald: #10B981;
         }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-            font-family: 'Plus Jakarta Sans', sans-serif;
-        }
-
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
         body {
             background-color: var(--bg-dark);
             background-image: 
@@ -44,7 +362,6 @@
             display: flex;
             flex-direction: column;
         }
-
         header {
             border-bottom: 1px solid var(--card-border);
             backdrop-filter: blur(16px);
@@ -53,7 +370,6 @@
             top: 0;
             z-index: 50;
         }
-
         .navbar {
             max-width: 1200px;
             margin: 0 auto;
@@ -62,46 +378,13 @@
             justify-content: space-between;
             align-items: center;
         }
-
-        .brand-logo {
-            display: flex;
-            align-items: center;
-            gap: 0.15rem;
-            text-decoration: none;
-        }
-
-        .brand-text-white {
-            font-family: 'Outfit', sans-serif;
-            font-weight: 700;
-            font-size: 1.45rem;
-            color: #FFFFFF;
-            letter-spacing: -0.5px;
-        }
-
-        .logo-badge {
-            background: var(--mywebby-orange);
-            color: white;
-            font-family: 'Outfit', sans-serif;
-            font-weight: 800;
-            font-size: 1.1rem;
-            padding: 0.2rem 0.5rem;
-            border-radius: 7px;
-            transform: rotate(-3deg);
-            margin: 0 0.15rem;
-            box-shadow: 0 4px 12px var(--mywebby-orange-glow);
-        }
-
+        .brand-logo { display: flex; align-items: center; gap: 0.6rem; text-decoration: none; }
+        .brand-logo img { height: 38px; width: auto; object-fit: contain; }
         .brand-subtitle {
-            color: var(--mywebby-orange);
-            font-weight: 600;
-            font-size: 0.85rem;
-            margin-left: 0.5rem;
-            background: rgba(240, 91, 40, 0.1);
-            padding: 0.2rem 0.5rem;
-            border-radius: 6px;
-            border: 1px solid rgba(240, 91, 40, 0.2);
+            color: var(--mywebby-orange); font-weight: 600; font-size: 0.85rem;
+            background: rgba(240, 91, 40, 0.1); padding: 0.2rem 0.6rem;
+            border-radius: 6px; border: 1px solid rgba(240, 91, 40, 0.2);
         }
-
         .badge-render {
             background: rgba(16, 185, 129, 0.12);
             border: 1px solid rgba(16, 185, 129, 0.3);
@@ -114,60 +397,16 @@
             align-items: center;
             gap: 0.45rem;
         }
-
         .badge-pulse {
-            width: 8px;
-            height: 8px;
-            background-color: #10B981;
-            border-radius: 50%;
-            box-shadow: 0 0 8px #10B981;
-            animation: pulse 2s infinite;
+            width: 8px; height: 8px; background-color: #10B981; border-radius: 50%;
+            box-shadow: 0 0 8px #10B981; animation: pulse 2s infinite;
         }
-
-        @keyframes pulse {
-            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
-            70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
-            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-        }
-
-        main {
-            flex: 1;
-            max-width: 1200px;
-            width: 100%;
-            margin: 0 auto;
-            padding: 2.5rem 1.5rem;
-        }
-
-        .hero {
-            text-align: center;
-            margin-bottom: 2.5rem;
-        }
-
-        .hero h1 {
-            font-family: 'Outfit', sans-serif;
-            font-size: 2.6rem;
-            font-weight: 700;
-            margin-bottom: 0.75rem;
-            line-height: 1.25;
-            color: #FFFFFF;
-        }
-
-        .hero p {
-            color: var(--text-muted);
-            font-size: 1.05rem;
-            max-width: 680px;
-            margin: 0 auto;
-        }
-
-        /* Tool Tabs */
-        .tabs-container {
-            display: flex;
-            justify-content: center;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-            margin-bottom: 2rem;
-        }
-
+        @keyframes pulse { 0% { transform: scale(0.95); } 70% { transform: scale(1); } 100% { transform: scale(0.95); } }
+        main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 2.5rem 1.5rem; }
+        .hero { text-align: center; margin-bottom: 2.5rem; }
+        .hero h1 { font-family: 'Outfit', sans-serif; font-size: 2.6rem; font-weight: 700; margin-bottom: 0.75rem; line-height: 1.25; color: #FFFFFF; }
+        .hero p { color: var(--text-muted); font-size: 1.05rem; max-width: 680px; margin: 0 auto; }
+        .tabs-container { display: flex; justify-content: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 2rem; }
         .tab-btn {
             background: rgba(255, 255, 255, 0.03);
             border: 1px solid var(--card-border);
@@ -182,31 +421,18 @@
             align-items: center;
             gap: 0.55rem;
         }
-
-        .tab-btn i {
-            width: 18px;
-            height: 18px;
-        }
-
-        .tab-btn:hover {
-            background: rgba(255, 255, 255, 0.07);
-            color: var(--text-main);
-            border-color: rgba(255, 255, 255, 0.15);
-        }
-
+        .tab-btn i { width: 18px; height: 18px; }
+        .tab-btn:hover { background: rgba(255, 255, 255, 0.07); color: var(--text-main); border-color: rgba(255, 255, 255, 0.15); }
         .tab-btn.active {
             background: rgba(240, 91, 40, 0.15);
             border-color: var(--mywebby-orange);
             color: white;
             box-shadow: 0 4px 20px var(--mywebby-orange-glow);
         }
-
         .tab-btn.highlight {
             border-color: rgba(240, 91, 40, 0.5);
             background: rgba(240, 91, 40, 0.08);
         }
-
-        /* Main Workspace Card */
         .workspace-card {
             background: var(--mywebby-teal-card);
             border: 1px solid rgba(255, 255, 255, 0.08);
@@ -216,7 +442,6 @@
             box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
             margin-bottom: 3rem;
         }
-
         .dropzone {
             border: 2px dashed rgba(240, 91, 40, 0.35);
             border-radius: 16px;
@@ -227,269 +452,70 @@
             background: rgba(240, 91, 40, 0.03);
             position: relative;
         }
-
-        .dropzone:hover, .dropzone.dragover {
-            border-color: var(--mywebby-orange);
-            background: rgba(240, 91, 40, 0.08);
-            transform: translateY(-2px);
-        }
-
+        .dropzone:hover, .dropzone.dragover { border-color: var(--mywebby-orange); background: rgba(240, 91, 40, 0.08); transform: translateY(-2px); }
         .dropzone-icon {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 64px;
-            height: 64px;
-            background: rgba(240, 91, 40, 0.12);
-            color: var(--mywebby-orange);
-            border-radius: 50%;
-            margin-bottom: 1rem;
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 64px; height: 64px; background: rgba(240, 91, 40, 0.12);
+            color: var(--mywebby-orange); border-radius: 50%; margin-bottom: 1rem;
         }
-
-        .dropzone-icon i {
-            width: 32px;
-            height: 32px;
-        }
-
-        .file-input {
-            display: none;
-        }
-
-        /* Options Panel */
-        .tool-panel {
-            display: none;
-            margin-top: 1.5rem;
-            padding-top: 1.5rem;
-            border-top: 1px solid var(--card-border);
-        }
-
-        .tool-panel.active {
-            display: block;
-            animation: fadeIn 0.3s ease forwards;
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        .form-group {
-            margin-bottom: 1.25rem;
-        }
-
-        .form-label {
-            display: block;
-            font-size: 0.9rem;
-            font-weight: 600;
-            margin-bottom: 0.5rem;
-            color: #D1D5DB;
-        }
-
+        .dropzone-icon i { width: 32px; height: 32px; }
+        .file-input { display: none; }
+        .tool-panel { display: none; margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid var(--card-border); }
+        .tool-panel.active { display: block; animation: fadeIn 0.3s ease forwards; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .form-group { margin-bottom: 1.25rem; }
+        .form-label { display: block; font-size: 0.9rem; font-weight: 600; margin-bottom: 0.5rem; color: #D1D5DB; }
         .form-control {
-            width: 100%;
-            padding: 0.75rem 1rem;
-            background: rgba(6, 21, 23, 0.6);
-            border: 1px solid var(--card-border);
-            border-radius: 10px;
-            color: white;
-            font-size: 0.95rem;
-            outline: none;
-            transition: border-color 0.2s ease;
+            width: 100%; padding: 0.75rem 1rem; background: rgba(6, 21, 23, 0.6);
+            border: 1px solid var(--card-border); border-radius: 10px; color: white;
+            font-size: 0.95rem; outline: none; transition: border-color 0.2s ease;
         }
-
-        .form-control:focus {
-            border-color: var(--mywebby-orange);
-        }
-
+        .form-control:focus { border-color: var(--mywebby-orange); }
         .btn-action {
-            width: 100%;
-            padding: 1rem;
-            background: var(--mywebby-orange);
-            border: none;
-            border-radius: 12px;
-            color: white;
-            font-weight: 700;
-            font-size: 1.05rem;
-            cursor: pointer;
-            transition: all 0.3s ease;
+            width: 100%; padding: 1rem; background: var(--mywebby-orange);
+            border: none; border-radius: 12px; color: white; font-weight: 700;
+            font-size: 1.05rem; cursor: pointer; transition: all 0.3s ease;
             box-shadow: 0 4px 15px var(--mywebby-orange-glow);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 0.6rem;
+            display: flex; align-items: center; justify-content: center; gap: 0.6rem;
         }
-
-        .btn-action i {
-            width: 20px;
-            height: 20px;
-        }
-
-        .btn-action:hover {
-            background: var(--mywebby-orange-hover);
-            transform: translateY(-2px);
-            box-shadow: 0 6px 25px var(--mywebby-orange-glow);
-        }
-
-        .btn-action:disabled {
-            opacity: 0.45;
-            cursor: not-allowed;
-            transform: none;
-            box-shadow: none;
-        }
-
-        /* File List */
-        .file-list {
-            margin-top: 1.5rem;
-            display: flex;
-            flex-direction: column;
-            gap: 0.75rem;
-        }
-
+        .btn-action i { width: 20px; height: 20px; }
+        .btn-action:hover { background: var(--mywebby-orange-hover); transform: translateY(-2px); box-shadow: 0 6px 25px var(--mywebby-orange-glow); }
+        .btn-action:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shadow: none; }
+        .file-list { margin-top: 1.5rem; display: flex; flex-direction: column; gap: 0.75rem; }
         .file-item {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            background: rgba(6, 21, 23, 0.5);
-            border: 1px solid var(--card-border);
-            padding: 0.85rem 1.25rem;
-            border-radius: 12px;
+            display: flex; align-items: center; justify-content: space-between;
+            background: rgba(6, 21, 23, 0.5); border: 1px solid var(--card-border);
+            padding: 0.85rem 1.25rem; border-radius: 12px;
         }
-
-        .file-info {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-        }
-
-        .file-info i {
-            width: 24px;
-            height: 24px;
-            color: var(--mywebby-orange);
-        }
-
-        .file-name {
-            font-weight: 600;
-            font-size: 0.95rem;
-        }
-
-        .file-size {
-            color: var(--text-muted);
-            font-size: 0.8rem;
-        }
-
-        .btn-remove {
-            background: transparent;
-            border: none;
-            color: #EF4444;
-            cursor: pointer;
-            padding: 0.4rem;
-            border-radius: 6px;
-            display: flex;
-            align-items: center;
-            transition: background 0.2s ease;
-        }
-
-        .btn-remove i {
-            width: 18px;
-            height: 18px;
-        }
-
-        .btn-remove:hover {
-            background: rgba(239, 68, 68, 0.15);
-        }
-
-        /* Result Section */
-        .result-box {
-            display: none;
-            margin-top: 1.5rem;
-            padding: 1.5rem;
-            background: rgba(16, 185, 129, 0.08);
-            border: 1px solid rgba(16, 185, 129, 0.3);
-            border-radius: 16px;
-            text-align: center;
-        }
-
-        .result-box.active {
-            display: block;
-            animation: fadeIn 0.3s ease forwards;
-        }
-
-        .result-box i[data-lucide="check-circle"] {
-            width: 48px;
-            height: 48px;
-            color: #10B981;
-            margin-bottom: 0.5rem;
-        }
-
+        .file-info { display: flex; align-items: center; gap: 0.75rem; }
+        .file-info i { width: 24px; height: 24px; color: var(--mywebby-orange); }
+        .file-name { font-weight: 600; font-size: 0.95rem; }
+        .file-size { color: var(--text-muted); font-size: 0.8rem; }
+        .btn-remove { background: transparent; border: none; color: #EF4444; cursor: pointer; padding: 0.4rem; border-radius: 6px; display: flex; align-items: center; }
+        .btn-remove i { width: 18px; height: 18px; }
+        .btn-remove:hover { background: rgba(239, 68, 68, 0.15); }
+        .result-box { display: none; margin-top: 1.5rem; padding: 1.5rem; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 16px; text-align: center; }
+        .result-box.active { display: block; animation: fadeIn 0.3s ease forwards; }
+        .result-box i[data-lucide="check-circle"] { width: 48px; height: 48px; color: #10B981; margin-bottom: 0.5rem; }
         .btn-download {
-            background: #10B981;
-            color: white;
-            padding: 0.85rem 1.75rem;
-            border-radius: 12px;
-            text-decoration: none;
-            font-weight: 700;
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            margin-top: 1rem;
-            box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
-            transition: all 0.25s ease;
+            background: #10B981; color: white; padding: 0.85rem 1.75rem; border-radius: 12px;
+            text-decoration: none; font-weight: 700; display: inline-flex; align-items: center; gap: 0.5rem;
+            margin-top: 1rem; box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3); transition: all 0.25s ease;
         }
-
-        .btn-download i {
-            width: 20px;
-            height: 20px;
-        }
-
-        .btn-download:hover {
-            background: #059669;
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4);
-        }
-
-        /* Spinner */
-        .spinner {
-            display: none;
-            width: 20px;
-            height: 20px;
-            border: 3px solid rgba(255, 255, 255, 0.3);
-            border-radius: 50%;
-            border-top-color: white;
-            animation: spin 0.8s linear infinite;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
-        footer {
-            border-top: 1px solid var(--card-border);
-            text-align: center;
-            padding: 1.75rem 1.5rem;
-            color: var(--text-muted);
-            font-size: 0.88rem;
-            background: rgba(6, 21, 23, 0.9);
-        }
-
-        footer a {
-            color: var(--mywebby-orange);
-            text-decoration: none;
-            font-weight: 600;
-        }
-
-        footer a:hover {
-            text-decoration: underline;
-        }
+        .btn-download i { width: 20px; height: 20px; }
+        .btn-download:hover { background: #059669; transform: translateY(-2px); box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4); }
+        .spinner { display: none; width: 20px; height: 20px; border: 3px solid rgba(255, 255, 255, 0.3); border-radius: 50%; border-top-color: white; animation: spin 0.8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        footer { border-top: 1px solid var(--card-border); text-align: center; padding: 1.75rem 1.5rem; color: var(--text-muted); font-size: 0.88rem; background: rgba(6, 21, 23, 0.9); }
+        footer a { color: var(--mywebby-orange); text-decoration: none; font-weight: 600; }
+        footer a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
-
     <header>
         <div class="navbar">
             <a href="https://mywebby.it" target="_blank" class="brand-logo">
-                <span class="brand-text-white">my</span>
-                <div class="logo-badge">we</div>
-                <span class="brand-text-white">bby</span>
+                <img src="/images/MWbianco.png" alt="MyWebby Agency" onerror="this.onerror=null; this.src='https://mywebby.it/assets/img/logo-bianco.png';" />
                 <span class="brand-subtitle">PDF Tools</span>
             </a>
             <div class="badge-render">
@@ -501,92 +527,64 @@
 
     <main>
         <section class="hero">
-            <h1>Gestione e Conversione Intelligente dei PDF</h1>
-            <p>Converti automaticamente documenti statici con righe e quadrati in Moduli PDF Interattivi Compilabili.</p>
+            <h1>Edita il tuo PDF e Rendi i Campi Compilabili</h1>
+            <p>Trasforma automaticamente qualsiasi documento PDF statico in un modulo interattivo con campi di testo digitabili e spunte cliccabili.</p>
         </section>
 
-        <!-- Tool Selection Tabs -->
         <div class="tabs-container">
             <button class="tab-btn active highlight" onclick="switchTool('make-fillable')">
-                <i data-lucide="sparkles"></i> Rendi Compilabile (Smart Analyzer)
+                <i data-lucide="sparkles"></i> Crea Campi Compilabili
             </button>
-            <button class="tab-btn" onclick="switchTool('merge')">
-                <i data-lucide="layers"></i> Unisci PDF
-            </button>
-            <button class="tab-btn" onclick="switchTool('split')">
-                <i data-lucide="scissors"></i> Dividi Pagine
-            </button>
-            <button class="tab-btn" onclick="switchTool('rotate')">
-                <i data-lucide="rotate-cw"></i> Ruota Pagine
-            </button>
-            <button class="tab-btn" onclick="switchTool('compress')">
-                <i data-lucide="minimize-2"></i> Comprimi
-            </button>
-            <button class="tab-btn" onclick="switchTool('watermark')">
-                <i data-lucide="stamp"></i> Filigrana
-            </button>
-            <button class="tab-btn" onclick="switchTool('extract')">
-                <i data-lucide="file-text"></i> Estrai Testo
-            </button>
-            <button class="tab-btn" onclick="switchTool('protect')">
-                <i data-lucide="lock"></i> Proteggi
-            </button>
+            <button class="tab-btn" onclick="switchTool('merge')"><i data-lucide="layers"></i> Unisci PDF</button>
+            <button class="tab-btn" onclick="switchTool('split')"><i data-lucide="scissors"></i> Dividi Pagine</button>
+            <button class="tab-btn" onclick="switchTool('rotate')"><i data-lucide="rotate-cw"></i> Ruota Pagine</button>
+            <button class="tab-btn" onclick="switchTool('compress')"><i data-lucide="minimize-2"></i> Comprimi</button>
+            <button class="tab-btn" onclick="switchTool('watermark')"><i data-lucide="stamp"></i> Filigrana</button>
+            <button class="tab-btn" onclick="switchTool('extract')"><i data-lucide="file-text"></i> Estrai Testo</button>
+            <button class="tab-btn" onclick="switchTool('protect')"><i data-lucide="lock"></i> Proteggi</button>
         </div>
 
         <div class="workspace-card">
-            <!-- Drag & Drop Zone -->
             <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
-                <div class="dropzone-icon">
-                    <i data-lucide="upload-cloud"></i>
-                </div>
-                <h3 style="margin-bottom: 0.5rem; font-size: 1.2rem;">Trascina qui il tuo modulo PDF statico</h3>
+                <div class="dropzone-icon"><i data-lucide="upload-cloud"></i></div>
+                <h3 style="margin-bottom: 0.5rem; font-size: 1.2rem;">Trascina qui il tuo documento PDF</h3>
                 <p style="color: var(--text-muted); font-size: 0.9rem;">oppure clicca per selezionare dal tuo computer</p>
                 <input type="file" id="fileInput" class="file-input" accept=".pdf" multiple onchange="handleFileSelect(event)">
             </div>
 
-            <!-- Selected Files List -->
             <div class="file-list" id="fileList"></div>
 
-            <!-- SMART MAKE FILLABLE PANEL -->
             <div class="tool-panel active" id="panel-make-fillable">
                 <div style="background: rgba(240, 91, 40, 0.08); border: 1px solid rgba(240, 91, 40, 0.25); border-radius: 12px; padding: 1.25rem; margin-bottom: 1.25rem;">
                     <h4 style="font-size: 1rem; color: #FFFFFF; font-weight: 700; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.5rem;">
-                        <i data-lucide="wand-2" style="color: var(--mywebby-orange); width: 20px; height: 20px;"></i> Smart PDF Form Analyzer
+                        <i data-lucide="wand-2" style="color: var(--mywebby-orange); width: 20px; height: 20px;"></i> Conversione Automatica in Modulo Compilabile
                     </h4>
                     <p style="color: var(--text-muted); font-size: 0.88rem; line-height: 1.5;">
-                        Il sistema analizzerà automaticamente le sottolineature (<strong>_______</strong>), le linee di testo e i quadrati di spunta (<strong>☐</strong>, <strong>□</strong>, o riquadri vettoriali) del tuo documento, convertendoli in <strong>Campi di Testo compilabili</strong> e <strong>Caselle di Spunta cliccabili</strong> direttamente nel browser o su smartphone!
+                        Il sistema analizzerà le sottolineature (<strong>_______</strong>) e i quadrati di spunta (<strong>☐</strong>, <strong>□</strong>) del tuo PDF per trasformarli in <strong>campi di testo digitabili</strong> e <strong>spunte cliccabili</strong> pronti all'uso su PC e smartphone!
                     </p>
                 </div>
                 <button class="btn-action" id="btn-make-fillable" onclick="executeMakeFillable()" disabled>
-                    <div class="spinner" id="spinner-make-fillable"></div>
-                    <i data-lucide="sparkles"></i> Analizza e Rendi PDF Compilabile Ora
+                    <div class="spinner" id="spinner-make-fillable"></div> <i data-lucide="sparkles"></i> Crea Campi Compilabili Ora
                 </button>
             </div>
 
-            <!-- MERGE PANEL -->
             <div class="tool-panel" id="panel-merge">
-                <p style="color: var(--text-muted); margin-bottom: 1.25rem; font-size: 0.9rem;">
-                    Seleziona 2 o più file PDF per unirli in un unico documento.
-                </p>
+                <p style="color: var(--text-muted); margin-bottom: 1.25rem; font-size: 0.9rem;">Seleziona 2 o più file PDF per unirli in un unico documento.</p>
                 <button class="btn-action" id="btn-merge" onclick="executeMerge()" disabled>
-                    <div class="spinner" id="spinner-merge"></div>
-                    <i data-lucide="layers"></i> Unisci PDF Ora
+                    <div class="spinner" id="spinner-merge"></div> <i data-lucide="layers"></i> Unisci PDF Ora
                 </button>
             </div>
 
-            <!-- SPLIT PANEL -->
             <div class="tool-panel" id="panel-split">
                 <div class="form-group">
                     <label class="form-label">Intervallo di Pagine (es. 1-3, 5, 8-10):</label>
                     <input type="text" id="split-pages" class="form-control" placeholder="Lascia vuoto per estrarre tutte le pagine">
                 </div>
                 <button class="btn-action" id="btn-split" onclick="executeSplit()" disabled>
-                    <div class="spinner" id="spinner-split"></div>
-                    <i data-lucide="scissors"></i> Dividi PDF Ora
+                    <div class="spinner" id="spinner-split"></div> <i data-lucide="scissors"></i> Dividi PDF Ora
                 </button>
             </div>
 
-            <!-- ROTATE PANEL -->
             <div class="tool-panel" id="panel-rotate">
                 <div class="form-group">
                     <label class="form-label">Angolo di Rotazione:</label>
@@ -597,65 +595,49 @@
                     </select>
                 </div>
                 <button class="btn-action" id="btn-rotate" onclick="executeRotate()" disabled>
-                    <div class="spinner" id="spinner-rotate"></div>
-                    <i data-lucide="rotate-cw"></i> Ruota PDF Ora
+                    <div class="spinner" id="spinner-rotate"></div> <i data-lucide="rotate-cw"></i> Ruota PDF Ora
                 </button>
             </div>
 
-            <!-- COMPRESS PANEL -->
             <div class="tool-panel" id="panel-compress">
-                <p style="color: var(--text-muted); margin-bottom: 1.25rem; font-size: 0.9rem;">
-                    Riduce le dimensioni del file ottimizzando la struttura interna del documento.
-                </p>
+                <p style="color: var(--text-muted); margin-bottom: 1.25rem; font-size: 0.9rem;">Riduce le dimensioni del file ottimizzando il documento.</p>
                 <button class="btn-action" id="btn-compress" onclick="executeCompress()" disabled>
-                    <div class="spinner" id="spinner-compress"></div>
-                    <i data-lucide="minimize-2"></i> Comprimi PDF Ora
+                    <div class="spinner" id="spinner-compress"></div> <i data-lucide="minimize-2"></i> Comprimi PDF Ora
                 </button>
             </div>
 
-            <!-- WATERMARK PANEL -->
             <div class="tool-panel" id="panel-watermark">
                 <div class="form-group">
                     <label class="form-label">Testo Filigrana:</label>
                     <input type="text" id="watermark-text" class="form-control" value="RISERVATO">
                 </div>
                 <button class="btn-action" id="btn-watermark" onclick="executeWatermark()" disabled>
-                    <div class="spinner" id="spinner-watermark"></div>
-                    <i data-lucide="stamp"></i> Applica Filigrana
+                    <div class="spinner" id="spinner-watermark"></div> <i data-lucide="stamp"></i> Applica Filigrana
                 </button>
             </div>
 
-            <!-- EXTRACT PANEL -->
             <div class="tool-panel" id="panel-extract">
-                <p style="color: var(--text-muted); margin-bottom: 1.25rem; font-size: 0.9rem;">
-                    Estrai tutto il testo contenuto nel tuo documento PDF in formato TXT pulito.
-                </p>
+                <p style="color: var(--text-muted); margin-bottom: 1.25rem; font-size: 0.9rem;">Estrai tutto il testo contenuto nel PDF in formato TXT pulito.</p>
                 <button class="btn-action" id="btn-extract" onclick="executeExtractText()" disabled>
-                    <div class="spinner" id="spinner-extract"></div>
-                    <i data-lucide="file-text"></i> Estrai Testo Ora
+                    <div class="spinner" id="spinner-extract"></div> <i data-lucide="file-text"></i> Estrai Testo Ora
                 </button>
             </div>
 
-            <!-- PROTECT PANEL -->
             <div class="tool-panel" id="panel-protect">
                 <div class="form-group">
                     <label class="form-label">Password di Protezione:</label>
                     <input type="password" id="protect-password" class="form-control" placeholder="Inserisci una password sicura">
                 </div>
                 <button class="btn-action" id="btn-protect" onclick="executeProtect()" disabled>
-                    <div class="spinner" id="spinner-protect"></div>
-                    <i data-lucide="lock"></i> Proteggi PDF con Password
+                    <div class="spinner" id="spinner-protect"></div> <i data-lucide="lock"></i> Proteggi PDF con Password
                 </button>
             </div>
 
-            <!-- RESULT BOX -->
             <div class="result-box" id="resultBox">
                 <i data-lucide="check-circle"></i>
                 <h3 style="font-size: 1.25rem;">Operazione Completata con Successo!</h3>
                 <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 0.25rem;" id="resultMessage">Il tuo Modulo PDF Interattivo e Compilabile è pronto!</p>
-                <a href="#" id="downloadLink" class="btn-download" download>
-                    <i data-lucide="download"></i> Scarica Modulo PDF Compilabile
-                </a>
+                <a href="#" id="downloadLink" class="btn-download" download><i data-lucide="download"></i> Scarica Modulo PDF Compilabile</a>
             </div>
         </div>
     </main>
@@ -666,39 +648,19 @@
 
     <script>
         document.getElementById('currentYear').textContent = new Date().getFullYear();
-
         let selectedFiles = [];
         let currentTool = 'make-fillable';
 
         const dropzone = document.getElementById('dropzone');
+        ['dragenter', 'dragover'].forEach(eName => dropzone.addEventListener(eName, (e) => { e.preventDefault(); dropzone.classList.add('dragover'); }, false));
+        ['dragleave', 'drop'].forEach(eName => dropzone.addEventListener(eName, (e) => { e.preventDefault(); dropzone.classList.remove('dragover'); }, false));
+        dropzone.addEventListener('drop', (e) => handleFiles(e.dataTransfer.files));
 
-        ['dragenter', 'dragover'].forEach(eventName => {
-            dropzone.addEventListener(eventName, (e) => {
-                e.preventDefault();
-                dropzone.classList.add('dragover');
-            }, false);
-        });
-
-        ['dragleave', 'drop'].forEach(eventName => {
-            dropzone.addEventListener(eventName, (e) => {
-                e.preventDefault();
-                dropzone.classList.remove('dragover');
-            }, false);
-        });
-
-        dropzone.addEventListener('drop', (e) => {
-            handleFiles(e.dataTransfer.files);
-        });
-
-        function handleFileSelect(e) {
-            handleFiles(e.target.files);
-        }
+        function handleFileSelect(e) { handleFiles(e.target.files); }
 
         function handleFiles(files) {
             for (let i = 0; i < files.length; i++) {
-                if (files[i].type === 'application/pdf') {
-                    selectedFiles.push(files[i]);
-                }
+                if (files[i].type === 'application/pdf') selectedFiles.push(files[i]);
             }
             renderFileList();
             updateButtonStates();
@@ -718,9 +680,7 @@
                                 <div class="file-size">${sizeMb} MB</div>
                             </div>
                         </div>
-                        <button class="btn-remove" onclick="removeFile(${idx})">
-                            <i data-lucide="trash-2"></i>
-                        </button>
+                        <button class="btn-remove" onclick="removeFile(${idx})"><i data-lucide="trash-2"></i></button>
                     </div>
                 `;
             });
@@ -737,7 +697,6 @@
             currentTool = tool;
             document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
             document.querySelectorAll('.tool-panel').forEach(panel => panel.classList.remove('active'));
-            
             event.currentTarget.classList.add('active');
             document.getElementById(`panel-${tool}`).classList.add('active');
             document.getElementById('resultBox').classList.remove('active');
@@ -787,7 +746,7 @@
                 if (!res.ok) throw new Error('Errore durante la conversione in modulo compilabile');
                 const createdFields = res.headers.get('X-Fields-Created') || 'diversi';
                 const blob = await res.blob();
-                showResult(blob, 'modulo_pdf_compilabile.pdf', `Creati ${createdFields} campi interattivi (Testo e Caselle di spunta)!`);
+                showResult(blob, 'pdf_compilabile.pdf', `Creati ${createdFields} campi interattivi (Testo e Spunte)!`);
             } catch (err) {
                 alert('Si è verificato un errore: ' + err.message);
             } finally {
@@ -800,16 +759,12 @@
             showLoading('merge', true);
             const formData = new FormData();
             selectedFiles.forEach(f => formData.append('files', f));
-
             try {
                 const res = await fetch('/api/merge', { method: 'POST', body: formData });
                 if (!res.ok) throw new Error('Errore durante unione');
                 showResult(await res.blob(), 'pdf_unito.pdf');
-            } catch (err) {
-                alert('Si è verificato un errore: ' + err.message);
-            } finally {
-                showLoading('merge', false);
-            }
+            } catch (err) { alert('Errore: ' + err.message); }
+            finally { showLoading('merge', false); }
         }
 
         async function executeSplit() {
@@ -818,16 +773,12 @@
             const formData = new FormData();
             formData.append('file', selectedFiles[0]);
             formData.append('pages', document.getElementById('split-pages').value);
-
             try {
                 const res = await fetch('/api/split', { method: 'POST', body: formData });
                 if (!res.ok) throw new Error('Errore durante divisione');
                 showResult(await res.blob(), 'pagine_estratte.pdf');
-            } catch (err) {
-                alert('Si è verificato un errore: ' + err.message);
-            } finally {
-                showLoading('split', false);
-            }
+            } catch (err) { alert('Errore: ' + err.message); }
+            finally { showLoading('split', false); }
         }
 
         async function executeRotate() {
@@ -836,16 +787,12 @@
             const formData = new FormData();
             formData.append('file', selectedFiles[0]);
             formData.append('angle', document.getElementById('rotate-angle').value);
-
             try {
                 const res = await fetch('/api/rotate', { method: 'POST', body: formData });
-                if (!res.ok) throw new Error('Errore durante la rotazione');
+                if (!res.ok) throw new Error('Errore durante rotazione');
                 showResult(await res.blob(), 'pdf_ruotato.pdf');
-            } catch (err) {
-                alert('Si è verificato un errore: ' + err.message);
-            } finally {
-                showLoading('rotate', false);
-            }
+            } catch (err) { alert('Errore: ' + err.message); }
+            finally { showLoading('rotate', false); }
         }
 
         async function executeCompress() {
@@ -853,16 +800,12 @@
             showLoading('compress', true);
             const formData = new FormData();
             formData.append('file', selectedFiles[0]);
-
             try {
                 const res = await fetch('/api/compress', { method: 'POST', body: formData });
                 if (!res.ok) throw new Error('Errore durante compressione');
                 showResult(await res.blob(), 'pdf_compresso.pdf');
-            } catch (err) {
-                alert('Si è verificato un errore: ' + err.message);
-            } finally {
-                showLoading('compress', false);
-            }
+            } catch (err) { alert('Errore: ' + err.message); }
+            finally { showLoading('compress', false); }
         }
 
         async function executeWatermark() {
@@ -871,16 +814,12 @@
             const formData = new FormData();
             formData.append('file', selectedFiles[0]);
             formData.append('text', document.getElementById('watermark-text').value);
-
             try {
                 const res = await fetch('/api/watermark', { method: 'POST', body: formData });
                 if (!res.ok) throw new Error('Errore filigrana');
                 showResult(await res.blob(), 'pdf_filigranato.pdf');
-            } catch (err) {
-                alert('Si è verificato un errore: ' + err.message);
-            } finally {
-                showLoading('watermark', false);
-            }
+            } catch (err) { alert('Errore: ' + err.message); }
+            finally { showLoading('watermark', false); }
         }
 
         async function executeExtractText() {
@@ -888,37 +827,28 @@
             showLoading('extract', true);
             const formData = new FormData();
             formData.append('file', selectedFiles[0]);
-
             try {
                 const res = await fetch('/api/extract-text', { method: 'POST', body: formData });
                 if (!res.ok) throw new Error('Errore estrazione testo');
                 showResult(await res.blob(), 'testo_estratto.txt');
-            } catch (err) {
-                alert('Si è verificato un errore: ' + err.message);
-            } finally {
-                showLoading('extract', false);
-            }
+            } catch (err) { alert('Errore: ' + err.message); }
+            finally { showLoading('extract', false); }
         }
 
         async function executeProtect() {
             if (selectedFiles.length === 0) return;
             const pass = document.getElementById('protect-password').value;
             if (!pass) { alert('Inserisci una password!'); return; }
-
             showLoading('protect', true);
             const formData = new FormData();
             formData.append('file', selectedFiles[0]);
             formData.append('password', pass);
-
             try {
                 const res = await fetch('/api/protect', { method: 'POST', body: formData });
                 if (!res.ok) throw new Error('Errore protezione');
                 showResult(await res.blob(), 'pdf_protetto.pdf');
-            } catch (err) {
-                alert('Si è verificato un errore: ' + err.message);
-            } finally {
-                showLoading('protect', false);
-            }
+            } catch (err) { alert('Errore: ' + err.message); }
+            finally { showLoading('protect', false); }
         }
 
         lucide.createIcons();
