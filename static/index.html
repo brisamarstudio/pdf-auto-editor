@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PDF Auto Editor - MyWebby Agency</title>
-    <meta name="description" content="Edita il tuo PDF e rendi i campi compilabili in modo automatico. Realizzato da MyWebby Agency.">
+    <meta name="description" content="Edita il tuo PDF, rendi i campi compilabili, aggiungi firme, converti ed elimina pagine in modo automatico. Realizzato da MyWebby Agency.">
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -507,14 +507,26 @@
 
     <main>
         <section class="hero">
-            <h1>Edita il tuo PDF e Rendi i Campi Compilabili</h1>
-            <p>Trasforma automaticamente qualsiasi documento PDF statico in un modulo interattivo con campi di testo digitabili e spunte cliccabili.</p>
+            <h1>Suite Professionale Gestione PDF</h1>
+            <p>Rendi i campi compilabili, aggiungi la tua firma, converti immagini ed edita i tuoi documenti in modo automatico e 100% gratuito.</p>
         </section>
 
         <!-- Tool Selection Tabs -->
         <div class="tabs-container">
             <button class="tab-btn active highlight" onclick="switchTool('make-fillable')">
                 <i data-lucide="sparkles"></i> Crea Campi Compilabili
+            </button>
+            <button class="tab-btn" onclick="switchTool('add-signature')">
+                <i data-lucide="pen-tool"></i> Firma / Timbro
+            </button>
+            <button class="tab-btn" onclick="switchTool('pdf-to-images')">
+                <i data-lucide="image"></i> PDF -> Immagini
+            </button>
+            <button class="tab-btn" onclick="switchTool('images-to-pdf')">
+                <i data-lucide="file-image"></i> Immagini -> PDF
+            </button>
+            <button class="tab-btn" onclick="switchTool('delete-pages')">
+                <i data-lucide="trash-2"></i> Elimina Pagine
             </button>
             <button class="tab-btn" onclick="switchTool('merge')">
                 <i data-lucide="layers"></i> Unisci PDF
@@ -545,27 +557,96 @@
                 <div class="dropzone-icon">
                     <i data-lucide="upload-cloud"></i>
                 </div>
-                <h3 style="margin-bottom: 0.5rem; font-size: 1.2rem;">Trascina qui uno o più documenti PDF (Multi Drag & Drop)</h3>
+                <h3 style="margin-bottom: 0.5rem; font-size: 1.2rem;" id="dropzoneText">Trascina qui i tuoi documenti o immagini</h3>
                 <p style="color: var(--text-muted); font-size: 0.9rem;">oppure clicca per selezionare dal tuo computer</p>
-                <input type="file" id="fileInput" class="file-input" accept=".pdf" multiple onchange="handleFileSelect(event)">
+                <input type="file" id="fileInput" class="file-input" accept=".pdf,.jpg,.jpeg,.png,.webp" multiple onchange="handleFileSelect(event)">
             </div>
 
             <!-- Selected Files List -->
             <div class="file-list" id="fileList"></div>
 
-            <!-- SMART MAKE FILLABLE PANEL -->
+            <!-- 1. SMART MAKE FILLABLE PANEL -->
             <div class="tool-panel active" id="panel-make-fillable">
                 <div style="background: rgba(240, 91, 40, 0.08); border: 1px solid rgba(240, 91, 40, 0.25); border-radius: 12px; padding: 1.25rem; margin-bottom: 1.25rem;">
                     <h4 style="font-size: 1rem; color: #FFFFFF; font-weight: 700; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.5rem;">
                         <i data-lucide="wand-2" style="color: var(--mywebby-orange); width: 20px; height: 20px;"></i> Conversione Automatica in Modulo Compilabile
                     </h4>
                     <p style="color: var(--text-muted); font-size: 0.88rem; line-height: 1.5;">
-                        Il sistema analizzerà le sottolineature (<strong>_______</strong>) e i quadrati di spunta (<strong>☐</strong>, <strong>□</strong>) dei tuoi PDF per trasformarli in <strong>campi di testo digitabili</strong> e <strong>spunte cliccabili</strong> pronti all'uso su PC e smartphone! (Se carichi più PDF, scaricherai un pacchetto ZIP completo).
+                        Il sistema analizzerà le sottolineature (<strong>_______</strong>) e i quadrati di spunta (<strong>☐</strong>, <strong>□</strong>) dei tuoi PDF per trasformarli in <strong>campi di testo digitabili</strong> e <strong>spunte cliccabili</strong> pronti all'uso su PC e smartphone!
                     </p>
                 </div>
                 <button class="btn-action" id="btn-make-fillable" onclick="executeMakeFillable()" disabled>
                     <div class="spinner" id="spinner-make-fillable"></div>
                     <i data-lucide="sparkles"></i> Crea Campi Compilabili Ora
+                </button>
+            </div>
+
+            <!-- 2. ADD SIGNATURE / STAMP PANEL -->
+            <div class="tool-panel" id="panel-add-signature">
+                <div style="background: rgba(240, 91, 40, 0.08); border: 1px solid rgba(240, 91, 40, 0.25); border-radius: 12px; padding: 1.25rem; margin-bottom: 1.25rem;">
+                    <h4 style="font-size: 1rem; color: #FFFFFF; font-weight: 700; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.5rem;">
+                        <i data-lucide="pen-tool" style="color: var(--mywebby-orange); width: 20px; height: 20px;"></i> Applica Firma Digitale o Timbro
+                    </h4>
+                    <p style="color: var(--text-muted); font-size: 0.88rem; line-height: 1.5;">
+                        Seleziona un'immagine della tua firma o timbro (formato PNG trasparente raccomandato) e scegli dove stamparla nel PDF.
+                    </p>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Carica Immagine Firma / Timbro (PNG/JPG):</label>
+                    <input type="file" id="sigFileInput" class="form-control" accept="image/*">
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div class="form-group">
+                        <label class="form-label">Numero Pagina:</label>
+                        <input type="number" id="sigPageNum" class="form-control" value="1" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Posizione:</label>
+                        <select id="sigPosition" class="form-control">
+                            <option value="bottom-right">In basso a destra</option>
+                            <option value="bottom-left">In basso a sinistra</option>
+                            <option value="bottom-center">In basso al centro</option>
+                            <option value="center">Al centro della pagina</option>
+                        </select>
+                    </div>
+                </div>
+                <button class="btn-action" id="btn-add-signature" onclick="executeAddSignature()" disabled>
+                    <div class="spinner" id="spinner-add-signature"></div>
+                    <i data-lucide="pen-tool"></i> Applica Firma sul PDF Ora
+                </button>
+            </div>
+
+            <!-- 3. PDF TO IMAGES PANEL -->
+            <div class="tool-panel" id="panel-pdf-to-images">
+                <p style="color: var(--text-muted); margin-bottom: 1.25rem; font-size: 0.9rem;">
+                    Estrai tutte le pagine del tuo documento PDF convertendole in immagini PNG ad alta definizione (ZIP).
+                </p>
+                <button class="btn-action" id="btn-pdf-to-images" onclick="executePdfToImages()" disabled>
+                    <div class="spinner" id="spinner-pdf-to-images"></div>
+                    <i data-lucide="image"></i> Converti PDF in Immagini PNG Ora
+                </button>
+            </div>
+
+            <!-- 4. IMAGES TO PDF PANEL -->
+            <div class="tool-panel" id="panel-images-to-pdf">
+                <p style="color: var(--text-muted); margin-bottom: 1.25rem; font-size: 0.9rem;">
+                    Carica una o più immagini (JPG, PNG, WEBP) per unificarle in un unico documento PDF perfetto.
+                </p>
+                <button class="btn-action" id="btn-images-to-pdf" onclick="executeImagesToPdf()" disabled>
+                    <div class="spinner" id="spinner-images-to-pdf"></div>
+                    <i data-lucide="file-image"></i> Converti Immagini in PDF Ora
+                </button>
+            </div>
+
+            <!-- 5. DELETE PAGES PANEL -->
+            <div class="tool-panel" id="panel-delete-pages">
+                <div class="form-group">
+                    <label class="form-label">Pagine da Eliminare (es. 1, 3, 5):</label>
+                    <input type="text" id="delete-pages-input" class="form-control" placeholder="Inserisci i numeri di pagina separati da virgola">
+                </div>
+                <button class="btn-action" id="btn-delete-pages" onclick="executeDeletePages()" disabled>
+                    <div class="spinner" id="spinner-delete-pages"></div>
+                    <i data-lucide="trash-2"></i> Rimuovi Pagine Selezionate Ora
                 </button>
             </div>
 
@@ -664,7 +745,7 @@
                 </div>
                 <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 0.25rem;" id="resultMessage">Il tuo Modulo PDF Interattivo e Compilabile è pronto!</p>
                 <a href="#" id="downloadLink" class="btn-download" download>
-                    <i data-lucide="download"></i> Scarica Modulo PDF Compilabile
+                    <i data-lucide="download"></i> Scarica File Elaborato
                 </a>
             </div>
         </div>
@@ -706,9 +787,7 @@
 
         function handleFiles(files) {
             for (let i = 0; i < files.length; i++) {
-                if (files[i].type === 'application/pdf') {
-                    selectedFiles.push(files[i]);
-                }
+                selectedFiles.push(files[i]);
             }
             renderFileList();
             updateButtonStates();
@@ -757,6 +836,10 @@
         function updateButtonStates() {
             const hasFiles = selectedFiles.length > 0;
             document.getElementById('btn-make-fillable').disabled = !hasFiles;
+            document.getElementById('btn-add-signature').disabled = !hasFiles;
+            document.getElementById('btn-pdf-to-images').disabled = !hasFiles;
+            document.getElementById('btn-images-to-pdf').disabled = !hasFiles;
+            document.getElementById('btn-delete-pages').disabled = !hasFiles;
             document.getElementById('btn-merge').disabled = selectedFiles.length < 2;
             document.getElementById('btn-split').disabled = !hasFiles;
             document.getElementById('btn-rotate').disabled = !hasFiles;
@@ -819,6 +902,86 @@
                 alert('Si è verificato un errore: ' + err.message);
             } finally {
                 showLoading('make-fillable', false);
+            }
+        }
+
+        async function executeAddSignature() {
+            if (selectedFiles.length === 0) return;
+            const sigFile = document.getElementById('sigFileInput').files[0];
+            if (!sigFile) { alert('Carica un\'immagine con la tua firma o timbro!'); return; }
+
+            showLoading('add-signature', true);
+            const formData = new FormData();
+            formData.append('file', selectedFiles[0]);
+            formData.append('signature', sigFile);
+            formData.append('page_num', document.getElementById('sigPageNum').value);
+            formData.append('position', document.getElementById('sigPosition').value);
+
+            try {
+                const res = await fetch('/api/add-signature', { method: 'POST', body: formData });
+                if (!res.ok) throw new Error('Errore durante inserimento firma');
+                showResult(await res.blob(), 'pdf_firmato.pdf', 'Firma/Timbro applicato con successo!');
+            } catch (err) {
+                alert('Si è verificato un errore: ' + err.message);
+            } finally {
+                showLoading('add-signature', false);
+            }
+        }
+
+        async function executePdfToImages() {
+            if (selectedFiles.length === 0) return;
+            showLoading('pdf-to-images', true);
+            const formData = new FormData();
+            formData.append('file', selectedFiles[0]);
+
+            try {
+                const res = await fetch('/api/pdf-to-images', { method: 'POST', body: formData });
+                if (!res.ok) throw new Error('Errore durante la conversione in immagini');
+                const isZip = res.headers.get('content-type').includes('zip');
+                const blob = await res.blob();
+                showResult(blob, isZip ? 'pagine_pdf_immagini.zip' : 'pagina_1.png', 'PDF convertito in immagini HD!');
+            } catch (err) {
+                alert('Si è verificato un errore: ' + err.message);
+            } finally {
+                showLoading('pdf-to-images', false);
+            }
+        }
+
+        async function executeImagesToPdf() {
+            if (selectedFiles.length === 0) return;
+            showLoading('images-to-pdf', true);
+            const formData = new FormData();
+            selectedFiles.forEach(f => formData.append('files', f));
+
+            try {
+                const res = await fetch('/api/images-to-pdf', { method: 'POST', body: formData });
+                if (!res.ok) throw new Error('Errore durante conversione immagini a PDF');
+                showResult(await res.blob(), 'immagini_convertite.pdf', 'Immagini unite in un unico PDF!');
+            } catch (err) {
+                alert('Si è verificato un errore: ' + err.message);
+            } finally {
+                showLoading('images-to-pdf', false);
+            }
+        }
+
+        async function executeDeletePages() {
+            if (selectedFiles.length === 0) return;
+            const pagesInput = document.getElementById('delete-pages-input').value;
+            if (!pagesInput) { alert('Inserisci i numeri di pagina da eliminare (es. 1, 3)!'); return; }
+
+            showLoading('delete-pages', true);
+            const formData = new FormData();
+            formData.append('file', selectedFiles[0]);
+            formData.append('pages_to_delete', pagesInput);
+
+            try {
+                const res = await fetch('/api/delete-pages', { method: 'POST', body: formData });
+                if (!res.ok) throw new Error('Errore durante eliminazione pagine');
+                showResult(await res.blob(), 'pdf_modificato.pdf', 'Pagine eliminate con successo!');
+            } catch (err) {
+                alert('Si è verificato un errore: ' + err.message);
+            } finally {
+                showLoading('delete-pages', false);
             }
         }
 

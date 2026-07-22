@@ -12,7 +12,7 @@ from pypdf import PdfReader, PdfWriter
 app = FastAPI(
     title="PDF Auto Editor API - MyWebby Agency",
     description="Microservizio veloce e potente per la gestione automatica e conversione intelligente di PDF in Moduli Compilabili.",
-    version="1.3.0"
+    version="1.4.0"
 )
 
 app.add_middleware(
@@ -51,7 +51,7 @@ async def serve_index():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "agency": "MyWebby Agency", "service": "pdf-auto-editor", "version": "1.3.0"}
+    return {"status": "ok", "agency": "MyWebby Agency", "service": "pdf-auto-editor", "version": "1.4.0"}
 
 
 def process_single_pdf_to_fillable(content: bytes) -> tuple[bytes, int, int]:
@@ -124,9 +124,6 @@ def process_single_pdf_to_fillable(content: bytes) -> tuple[bytes, int, int]:
 
 @app.post("/api/make-fillable")
 async def make_fillable_pdf(files: List[UploadFile] = File(...)):
-    """
-    SMART PDF FORM ANALYZER (Supporta file singolo o MULTI DRAG & DROP BATCH)
-    """
     if not files:
         raise HTTPException(status_code=400, detail="Nessun file PDF caricato.")
 
@@ -146,7 +143,6 @@ async def make_fillable_pdf(files: List[UploadFile] = File(...)):
             }
         )
 
-    # Multi-file Batch Processing -> Output ZIP
     zip_buffer = io.BytesIO()
     total_t = 0
     total_c = 0
@@ -169,6 +165,135 @@ async def make_fillable_pdf(files: List[UploadFile] = File(...)):
             "X-Fields-Created": str(total_t + total_c)
         }
     )
+
+
+# --- NUOVA FUNZIONE 1: DA PDF A IMMAGINI (PNG/JPG) ---
+@app.post("/api/pdf-to-images")
+async def pdf_to_images(file: UploadFile = File(...)):
+    content = await file.read()
+    try:
+        doc = fitz.open(stream=content, filetype="pdf")
+        if len(doc) == 1:
+            pix = doc[0].get_pixmap(dpi=150)
+            img_bytes = pix.tobytes("png")
+            doc.close()
+            return Response(
+                content=img_bytes,
+                media_type="image/png",
+                headers={"Content-Disposition": "attachment; filename=pagina_1.png"}
+            )
+        
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            for i, page in enumerate(doc):
+                pix = page.get_pixmap(dpi=150)
+                img_bytes = pix.tobytes("png")
+                zip_file.writestr(f"pagina_{i + 1}.png", img_bytes)
+        
+        doc.close()
+        return Response(
+            content=zip_buffer.getvalue(),
+            media_type="application/zip",
+            headers={"Content-Disposition": "attachment; filename=pagine_pdf_immagini.zip"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore conversione PDF a immagini: {str(e)}")
+
+
+# --- NUOVA FUNZIONE 2: DA IMMAGINI (JPG/PNG) A PDF ---
+@app.post("/api/images-to-pdf")
+async def images_to_pdf(files: List[UploadFile] = File(...)):
+    if not files:
+        raise HTTPException(status_code=400, detail="Nessuna immagine caricata.")
+    try:
+        out_doc = fitz.open()
+        for file in files:
+            img_data = await file.read()
+            img_doc = fitz.open(stream=img_data, filetype=file.filename.split('.')[-1].lower())
+            pdf_bytes = img_doc.convert_to_pdf()
+            img_doc.close()
+            page_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            out_doc.insert_pdf(page_doc)
+            page_doc.close()
+
+        out_bytes = out_doc.tobytes(garbage=4, deflate=True)
+        out_doc.close()
+        return Response(
+            content=out_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": "attachment; filename=immagini_convertite.pdf"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore conversione immagini a PDF: {str(e)}")
+
+
+# --- NUOVA FUNZIONE 3: APPLICA FIRMA O TIMBRO SU PDF ---
+@app.post("/api/add-signature")
+async def add_signature(
+    file: UploadFile = File(...),
+    signature: UploadFile = File(...),
+    page_num: int = Form(1),
+    position: str = Form("bottom-right")
+):
+    pdf_content = await file.read()
+    sig_content = await signature.read()
+    try:
+        doc = fitz.open(stream=pdf_content, filetype="pdf")
+        target_page_idx = min(max(0, page_num - 1), len(doc) - 1)
+        page = doc[target_page_idx]
+        rect = page.rect
+
+        sig_w, sig_h = 160, 60
+        if position == "bottom-right":
+            sig_rect = fitz.Rect(rect.width - sig_w - 30, rect.height - sig_h - 30, rect.width - 30, rect.height - 30)
+        elif position == "bottom-left":
+            sig_rect = fitz.Rect(30, rect.height - sig_h - 30, 30 + sig_w, rect.height - 30)
+        elif position == "bottom-center":
+            sig_rect = fitz.Rect((rect.width - sig_w) / 2, rect.height - sig_h - 30, (rect.width + sig_w) / 2, rect.height - 30)
+        else:
+            sig_rect = fitz.Rect((rect.width - sig_w) / 2, (rect.height - sig_h) / 2, (rect.width + sig_w) / 2, (rect.height + sig_h) / 2)
+
+        page.insert_image(sig_rect, stream=sig_content)
+        out_bytes = doc.tobytes(garbage=4, deflate=True)
+        doc.close()
+        return Response(
+            content=out_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": "attachment; filename=pdf_firmato.pdf"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore inserimento firma: {str(e)}")
+
+
+# --- NUOVA FUNZIONE 4: ELIMINA PAGINE DA PDF ---
+@app.post("/api/delete-pages")
+async def delete_pages(file: UploadFile = File(...), pages_to_delete: str = Form(...)):
+    content = await file.read()
+    try:
+        doc = fitz.open(stream=content, filetype="pdf")
+        total_pages = len(doc)
+        
+        pages_to_remove = set()
+        for part in pages_to_delete.split(","):
+            part = part.strip()
+            if part.isdigit():
+                p = int(part)
+                if 1 <= p <= total_pages:
+                    pages_to_remove.add(p - 1)
+
+        sorted_pages = sorted(list(pages_to_remove), reverse=True)
+        for idx in sorted_pages:
+            doc.delete_page(idx)
+
+        out_bytes = doc.tobytes(garbage=4, deflate=True)
+        doc.close()
+        return Response(
+            content=out_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": "attachment; filename=pdf_modificato.pdf"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore eliminazione pagine: {str(e)}")
 
 
 @app.post("/api/merge")
